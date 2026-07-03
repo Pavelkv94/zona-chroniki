@@ -158,6 +158,41 @@ export type SimEvent =
       payload: { readonly observer: EntityId; readonly target: EntityId; readonly loc: LocationId };
     })
   | (SimEventBase & {
+      type: 'encounter/started';
+      /**
+       * В локации `loc` ЗАВЯЗАЛОСЬ столкновение (задача 1.10b, система Encounters,
+       * D-022). `sides` — стороны боя как массивы eid-бойцов (Фаза 1: `[[охотники…],
+       * [дичь]]`; та же форма понесёт человек-vs-человек в Фазе 2 — резолвер и
+       * событие вида не хардкодят). Число сторон >= 2. Столкновение — следствие
+       * СОСТОЯНИЯ мира (человек с задачей HUNT встал в локации с живой дичью), НЕ
+       * «X% шанс встречи»: решение о завязке детерминировано (закон №2). `causedBy`
+       * → `perception/spotted` цели из `contacts` охотника (id взят из
+       * `Contact.spottedEvent`, D-030), либо `task/selected` (штамп `Task.causeEvent`),
+       * либо `null` (нет прослеживаемой причины).
+       */
+      payload: { readonly sides: ReadonlyArray<readonly EntityId[]>; readonly loc: LocationId };
+    })
+  | (SimEventBase & {
+      type: 'encounter/resolved';
+      /**
+       * Столкновение РАЗРЕШЕНО в тот же тик (задача 1.10b). `winnerSide` — индекс
+       * победившей стороны (0-based) или `null` (взаимный слом/пат — никто не
+       * победил). `casualties` — eid выбывших бойцов (их `Health.hp <= 0`; система
+       * НЕ удаляет их — это делает Death 1.11, читая проштампованный
+       * `Health.lethalCause = id этого события`, D-030). `ammoSpent` — сколько
+       * патронов ФИЗИЧЕСКИ израсходовал каждый стрелок (списано из инвентаря,
+       * закон №3), парами `[eid, кол-во]`, сорт. по eid. Исход вероятностен по
+       * РАЗБРОСУ попаданий (seeded rng, физиология выстрела — закон №2), но при
+       * фиксированном rng детерминирован; `causedBy` → соответствующий
+       * `encounter/started`.
+       */
+      payload: {
+        readonly winnerSide: number | null;
+        readonly casualties: readonly EntityId[];
+        readonly ammoSpent: ReadonlyArray<readonly [EntityId, number]>;
+      };
+    })
+  | (SimEventBase & {
       type: 'animal/born';
       /**
        * Стадо `herd` принесло приплод — новорождённое животное `eid` появилось в
