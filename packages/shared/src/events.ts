@@ -37,6 +37,23 @@
 
 import type { EntityId, EventId, LocationId, Tick } from './ids';
 
+/**
+ * Вид физиологической нужды (дискриминант в `needs/threshold`). Совпадает с
+ * именами полей компонента `Needs` (hunger/thirst/fatigue/fear). Страх (fear)
+ * порогов от системы Needs не даёт (она его только затухает); его пересечение
+ * порога публикует Perception (1.7) — тип нужды перечислен здесь ради полноты
+ * контракта события.
+ */
+export type NeedKind = 'hunger' | 'thirst' | 'fatigue' | 'fear';
+
+/**
+ * Уровень серьёзности пересечённого порога нужды. Пока единственный —
+ * `'critical'` (порог `*_CRITICAL` из balance/needs). Именованный уровень (а не
+ * сырое число из balance) держит payload читаемым для летописи/логики и
+ * расширяемым, если balance введёт промежуточные уровни (например `'warning'`).
+ */
+export type NeedLevel = 'critical';
+
 /** Общая «шапка» любого события шины. */
 export interface SimEventBase {
   /** Монотонный id, присваивается шиной при публикации (C-4). */
@@ -65,4 +82,14 @@ export type SimEvent =
       type: 'move/arrived';
       /** `eid` достиг локации `at` (конец текущего шага маршрута). */
       payload: { readonly eid: EntityId; readonly at: LocationId };
+    })
+  | (SimEventBase & {
+      type: 'needs/threshold';
+      /**
+       * Нужда `need` сущности `eid` ПЕРЕСЕКЛА порог `level` вверх (задача 1.5,
+       * система Needs). Публикуется РОВНО ОДИН раз на пересечение (пока нужда
+       * держится выше порога — не повторяется; упала и снова выросла — новое
+       * событие). `causedBy: null` — физиология корень причинной цепочки (№2).
+       */
+      payload: { readonly eid: EntityId; readonly need: NeedKind; readonly level: NeedLevel };
     });

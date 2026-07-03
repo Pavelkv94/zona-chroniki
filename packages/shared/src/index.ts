@@ -19,7 +19,7 @@ export type {
 
 export type { SystemSchedule, SystemName } from './schedule';
 
-export type { SimEvent, SimEventBase } from './events';
+export type { SimEvent, SimEventBase, NeedKind, NeedLevel } from './events';
 
 export type { JsonValue, SnapshotJSON, ComponentColumnJSON } from './snapshot';
 
