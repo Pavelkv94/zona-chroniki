@@ -24,7 +24,9 @@
  * `null`; `move/arrived.causedBy` → соответствующий `move/departed` этого шага.
  * Задача 1.6 (система Weather) добавляет `weather/changed` (среда сменила погоду);
  * `causedBy` → предыдущий `weather/changed` в логе (цепочка смен), `null` — первая
- * смена в истории мира (корень цепочки погоды).
+ * смена в истории мира (корень цепочки погоды). Задача 1.7 (система Perception)
+ * добавляет `perception/spotted` (наблюдатель впервые заметил цель в локации);
+ * `causedBy` → движение, сведшее их в поле зрения (`move/*`), либо `null`.
  *
  * Пример:
  * ```ts
@@ -110,4 +112,20 @@ export type SimEvent =
        * событие). `causedBy: null` — физиология корень причинной цепочки (№2).
        */
       payload: { readonly eid: EntityId; readonly need: NeedKind; readonly level: NeedLevel };
+    })
+  | (SimEventBase & {
+      type: 'perception/spotted';
+      /**
+       * `observer` ВПЕРВЫЕ заметил `target` в локации `loc` (задача 1.7, система
+       * Perception, D-023). Публикуется РОВНО на НОВЫЙ контакт: `target` появился
+       * в `contacts[observer]` этого тика, которого НЕ было на прошлом (контакт
+       * пропал и снова возник — новое событие; держится — не повторяется). Контакт
+       * = co-located сущность ИЛИ сущность из смежной локации, идущая в `loc`
+       * (`dest === loc`, «замечен на подходе»). `loc` — локация НАБЛЮДАТЕЛЯ.
+       * `causedBy` → последнее релевантное `move/departed`/`move/arrived`
+       * наблюдателя или цели в логе (движение свело их в поле зрения), либо `null`.
+       * Восприятие детерминировано (замечает ВСЕХ co-located, без «X% заметить» —
+       * закон №2), поэтому rng не участвует.
+       */
+      payload: { readonly observer: EntityId; readonly target: EntityId; readonly loc: LocationId };
     });
