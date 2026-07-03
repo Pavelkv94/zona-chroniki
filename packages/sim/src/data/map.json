@@ -1,0 +1,28 @@
+{
+  "locations": [
+    { "id": 0, "name": "Кордон", "type": "settlement", "water": true, "shelter": 9, "danger": 0.05, "game": 0.2, "forage": 0.45 },
+    { "id": 1, "name": "Свалка", "type": "ruins", "water": false, "shelter": 4, "danger": 0.25, "game": 0.3, "forage": 0.3 },
+    { "id": 2, "name": "Агропром", "type": "wild", "water": true, "shelter": 5, "danger": 0.3, "game": 0.5, "forage": 0.6 },
+    { "id": 3, "name": "Тёмная долина", "type": "wild", "water": false, "shelter": 3, "danger": 0.45, "game": 0.55, "forage": 0.4 },
+    { "id": 4, "name": "Дикая территория", "type": "wild", "water": true, "shelter": 2, "danger": 0.4, "game": 0.8, "forage": 0.7 },
+    { "id": 5, "name": "Бар «Росток»", "type": "settlement", "water": true, "shelter": 8, "danger": 0.1, "game": 0.15, "forage": 0.25 },
+    { "id": 6, "name": "Янтарь", "type": "anomaly", "water": true, "shelter": 3, "danger": 0.6, "game": 0.35, "forage": 0.2 },
+    { "id": 7, "name": "Рыжий лес", "type": "anomaly", "water": false, "shelter": 2, "danger": 0.75, "game": 0.65, "forage": 0.3 },
+    { "id": 8, "name": "Припять", "type": "ruins", "water": false, "shelter": 6, "danger": 0.7, "game": 0.25, "forage": 0.1 },
+    { "id": 9, "name": "Саркофаг", "type": "anomaly", "water": false, "shelter": 4, "danger": 1.0, "game": 0.4, "forage": 0.05 }
+  ],
+  "edges": [
+    { "a": 0, "b": 1, "len": 40, "cover": 0.5 },
+    { "a": 1, "b": 2, "len": 35, "cover": 0.45 },
+    { "a": 1, "b": 3, "len": 50, "cover": 0.3 },
+    { "a": 2, "b": 5, "len": 45, "cover": 0.5 },
+    { "a": 3, "b": 5, "len": 40, "cover": 0.3 },
+    { "a": 3, "b": 4, "len": 55, "cover": 0.4 },
+    { "a": 4, "b": 5, "len": 60, "cover": 0.4 },
+    { "a": 5, "b": 6, "len": 55, "cover": 0.3 },
+    { "a": 4, "b": 7, "len": 70, "cover": 0.5 },
+    { "a": 6, "b": 7, "len": 65, "cover": 0.2 },
+    { "a": 7, "b": 8, "len": 90, "cover": 0.3 },
+    { "a": 8, "b": 9, "len": 50, "cover": 0.2 }
+  ]
+}

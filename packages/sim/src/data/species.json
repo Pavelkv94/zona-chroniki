@@ -1,0 +1,30 @@
+{
+  "species": [
+    {
+      "id": 0,
+      "key": "deer",
+      "herdMin": 3,
+      "herdMax": 8,
+      "flees": true,
+      "power": 2,
+      "melee": 3,
+      "reproCap": 20,
+      "gestationTicks": 43200,
+      "foragePerTick": 0.4,
+      "meatYield": 40
+    },
+    {
+      "id": 1,
+      "key": "boar",
+      "herdMin": 1,
+      "herdMax": 4,
+      "flees": false,
+      "power": 8,
+      "melee": 14,
+      "reproCap": 12,
+      "gestationTicks": 36000,
+      "foragePerTick": 0.6,
+      "meatYield": 60
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "name": "zona-chroniki",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc -p packages/shared/tsconfig.json && tsc -p packages/sim/tsconfig.json && tsc -p packages/headless/tsconfig.json && tsc -p packages/ui/tsconfig.json",
+    "sim": "tsx packages/headless/src/cli.ts",
+    "sim:100days": "tsx packages/headless/src/cli.ts --days 100 --seed 42 --metrics",
+    "smoke": "npm run sim -- --days 1 --seed 42"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "tsx": "^4.19.2",
+    "typescript": "^6.0.3",
+    "vite": "^8.1.3",
+    "vitest": "^4.1.9"
+  }
+}

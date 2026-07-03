@@ -1,0 +1,62 @@
+/**
+ * @module @zona/sim
+ *
+ * Headless-ядро симуляции (ECS на bitecs, планировщик, PRNG, шина событий,
+ * сериализация). Публичный, минимальный и стабильный API: другие пакеты зависят
+ * от него, ломающие изменения согласуются через sim-architect.
+ *
+ * ЗАКОН №5: пакет НЕ импортирует ничего из DOM/React/Node и обязан запускаться
+ * headless. Соблюдение проверяется компилятором (в tsconfig нет `lib: DOM`,
+ * `types: node`).
+ *
+ * Публичная поверхность 0.1 намеренно узкая:
+ *  - `createSimWorld` — создать мир;
+ *  - `destroyEntity(world, eid)` — ЕДИНСТВЕННЫЙ способ удалить сущность
+ *    (убирает и из ECS, и из ResourceStore; см. world.ts);
+ *  - типы `SimWorld`, `ResourceStore`, контракты `System`/`SystemCtx`.
+ *
+ * Низкоуровневая обёртка bitecs (`core/ecs.ts`) и тип `EcsWorld` НЕ
+ * реэкспортируются: тип движка не должен течь в контракты ui/headless. Код
+ * внутри пакета (системы, сериализация) импортирует ecs-хелперы из `core/ecs`
+ * напрямую. PRNG (0.3) добавлен: `createRng`/`restoreRng`/`Rng`. Шина событий
+ * (0.4) добавлена: `createEventBus`/`EventBus` (реэкспорт типов `SimEvent`/
+ * `SimEventBase` — из `@zona/shared`). Планировщик (0.2) добавлен:
+ * `createScheduler`/`Scheduler` (исполняет `System` по `schedule`, D-006/D-009).
+ * Сериализация write-path (0.5a) добавлена: `serialize`/`hashSnapshot`/
+ * `canonicalize` + типы `SnapshotJSON`/`JsonValue` (из `@zona/shared`).
+ * Низкоуровневый `exportEntityIndex` (core/ecs) НЕ реэкспортируется (D-011).
+ * Сериализация read-path (0.5b) добавлена: `deserialize` (`SnapshotJSON →
+ * SimWorld`). Низкоуровневый `createEcsWorldFromIndex` (core/ecs) и внутренний
+ * `createResourceStore` (core/world) НЕ реэкспортируются (D-008/D-011).
+ *
+ * SoA-компоненты (1.0, D-018): `serialize`/`deserialize` получили ОПЦИОНАЛЬНЫЙ
+ * второй аргумент `registry` (по умолчанию — глобальный `COMPONENT_REGISTRY`) —
+ * публичная сигнатура обратно совместима (CLI/прежние вызовы не меняются). Обёртки
+ * компонентов (`defineComponentT`/`addComponent`/`hasComponent`/`removeComponent`/
+ * `queryEntities`, `core/ecs`) и сам реестр (`core/registry`) — ВНУТРЕННИЕ: их
+ * импортируют системы/сериализация внутри пакета, наружу они не текут (тип движка
+ * bitecs не должен попасть в контракты ui/headless). Публично добавлен лишь тип
+ * формы колонки `ComponentColumnJSON` (из `@zona/shared`) — документирует
+ * `SnapshotJSON.components`.
+ */
+
+export { createSimWorld, destroyEntity } from './core/world';
+export type { SimWorld, ResourceStore } from './core/world';
+
+export { createRng, restoreRng } from './core/rng';
+export type { Rng } from './core/rng';
+
+export { createEventBus } from './core/events';
+export type { EventBus } from './core/events';
+
+export { createScheduler } from './core/scheduler';
+export type { Scheduler } from './core/scheduler';
+
+export type { System, SystemCtx } from './core/system';
+
+export { serialize, deserialize, hashSnapshot, canonicalize } from './core/snapshot';
+export type { SnapshotJSON, JsonValue, ComponentColumnJSON } from '@zona/shared';
+
+// Балансовые константы времени (закон №7). Публичны: headless-CLI переводит
+// `--days N` в тики через `TICKS_PER_DAY`, не хардкодя 1440.
+export { TICKS_PER_DAY } from './balance/time';

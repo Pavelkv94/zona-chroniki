@@ -1,0 +1,11 @@
+{
+  "items": [
+    { "id": "pm", "kind": "weapon", "weight": 0.73, "caliber": "9mm" },
+    { "id": "ammo_9mm", "kind": "ammo", "weight": 0.01, "caliber": "9mm" },
+    { "id": "canned", "kind": "food", "weight": 0.4, "nutrition": 45 },
+    { "id": "bread", "kind": "food", "weight": 0.25, "nutrition": 25 },
+    { "id": "meat", "kind": "food", "weight": 0.3, "nutrition": 35 },
+    { "id": "water", "kind": "drink", "weight": 0.5, "hydration": 60 },
+    { "id": "bandage", "kind": "medical", "weight": 0.05 }
+  ]
+}

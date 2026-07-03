@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "paths": {
+      "@zona/shared": ["./packages/shared/src/index.ts"],
+      "@zona/sim": ["./packages/sim/src/index.ts"],
+      "@zona/headless": ["./packages/headless/src/index.ts"],
+      "@zona/ui": ["./packages/ui/src/index.ts"]
+    }
+  }
+}

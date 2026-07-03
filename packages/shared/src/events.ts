@@ -1,0 +1,54 @@
+/**
+ * @module @zona/shared/events
+ *
+ * Контракт события шины (append-only лог, задача 0.4, D-005). Чистые типы без
+ * зависимостей от bitecs/DOM/Node (закон №5): реализация шины живёт в
+ * `@zona/sim/core/events`, а форму события знают все пакеты монорепо (ui читает
+ * лог, headless прогоняет, narrative строит летопись).
+ *
+ * `SimEventBase` — общая «шапка» любого события:
+ *  - `id`       — монотонный `EventId`, присваивается шиной при `publish`
+ *                 (переживает save/load, C-4);
+ *  - `tick`     — тик, на котором событие ОПУБЛИКОВАНО (берётся из мира);
+ *  - `type`     — строковый дискриминант union'а;
+ *  - `causedBy` — id события-причины или `null` для корня причинной цепочки
+ *                 (закон №6: каждое событие несёт причину).
+ *
+ * `SimEvent` — расширяемый дискриминированный union. Фаза 0 знает только
+ * СЛУЖЕБНЫЕ типы ядра (`sim/tickStarted`, `sim/snapshotTaken`); доменные события
+ * (бой, миграция, торговля) профильные инженеры добавят позже, расширив union
+ * новыми членами с уникальным `type` и своим `payload`.
+ *
+ * Пример:
+ * ```ts
+ * const e: SimEvent = {
+ *   id: 1 as EventId,
+ *   tick: 0,
+ *   type: 'sim/tickStarted',
+ *   causedBy: null,
+ *   payload: { tick: 0 },
+ * };
+ * ```
+ */
+
+import type { EventId, Tick } from './ids';
+
+/** Общая «шапка» любого события шины. */
+export interface SimEventBase {
+  /** Монотонный id, присваивается шиной при публикации (C-4). */
+  readonly id: EventId;
+  /** Тик публикации события (берётся из состояния мира). */
+  readonly tick: Tick;
+  /** Строковый дискриминант конкретного типа события. */
+  readonly type: string;
+  /** id события-причины; `null` — корень причинной цепочки (закон №6). */
+  readonly causedBy: EventId | null;
+}
+
+/**
+ * Дискриминированный union всех событий симуляции. Расширяется добавлением
+ * новых членов `SimEventBase & { type: '<домен>/<имя>'; payload: … }`.
+ */
+export type SimEvent =
+  | (SimEventBase & { type: 'sim/tickStarted'; payload: { readonly tick: Tick } })
+  | (SimEventBase & { type: 'sim/snapshotTaken'; payload: { readonly hash: string } });
