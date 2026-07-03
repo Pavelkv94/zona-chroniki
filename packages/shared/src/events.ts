@@ -17,7 +17,11 @@
  * `SimEvent` — расширяемый дискриминированный union. Фаза 0 знает только
  * СЛУЖЕБНЫЕ типы ядра (`sim/tickStarted`, `sim/snapshotTaken`); доменные события
  * (бой, миграция, торговля) профильные инженеры добавят позже, расширив union
- * новыми членами с уникальным `type` и своим `payload`.
+ * новыми членами с уникальным `type` и своим `payload`. Фаза 1: система Movement
+ * (1.4) добавляет `move/departed` (сущность вышла из локации в соседнюю) и
+ * `move/arrived` (сущность достигла соседней локации). Причинность (закон №6):
+ * `move/departed.causedBy` → событие выбора задачи (`task/selected` из 1.8) или
+ * `null`; `move/arrived.causedBy` → соответствующий `move/departed` этого шага.
  *
  * Пример:
  * ```ts
@@ -31,7 +35,7 @@
  * ```
  */
 
-import type { EventId, Tick } from './ids';
+import type { EntityId, EventId, LocationId, Tick } from './ids';
 
 /** Общая «шапка» любого события шины. */
 export interface SimEventBase {
@@ -51,4 +55,14 @@ export interface SimEventBase {
  */
 export type SimEvent =
   | (SimEventBase & { type: 'sim/tickStarted'; payload: { readonly tick: Tick } })
-  | (SimEventBase & { type: 'sim/snapshotTaken'; payload: { readonly hash: string } });
+  | (SimEventBase & { type: 'sim/snapshotTaken'; payload: { readonly hash: string } })
+  | (SimEventBase & {
+      type: 'move/departed';
+      /** `eid` вышел из локации `from` в СОСЕДНЮЮ `to` (первый шаг маршрута). */
+      payload: { readonly eid: EntityId; readonly from: LocationId; readonly to: LocationId };
+    })
+  | (SimEventBase & {
+      type: 'move/arrived';
+      /** `eid` достиг локации `at` (конец текущего шага маршрута). */
+      payload: { readonly eid: EntityId; readonly at: LocationId };
+    });
