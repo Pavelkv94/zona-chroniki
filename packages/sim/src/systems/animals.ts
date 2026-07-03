@@ -26,9 +26,10 @@
  * движка транзита и без порчи человеческой Task-машинерии:
  *   • Animals САМ делает «departure» стоящему животному, которому нужно уйти
  *     (бегство/стадность): ставит `Position.dest = соседний шаг`, `etaTicks = edgeLen`,
- *     публикует `move/departed {eid, from, to}` (causedBy: null — экологический драйв
- *     корень, как Needs/Weather) и ШТАМПУЕТ его id в `Position.moveCause` (D-030),
- *     чтобы он дожил до прибытия;
+ *     публикует `move/departed {eid, from, to}` (causedBy: для БЕГСТВА —
+ *     `perception/spotted` человека-угрозы через `Contact.spottedEvent`, 1.10a/D-030;
+ *     для стадности — null, экологический драйв корень) и ШТАМПУЕТ его id в
+ *     `Position.moveCause` (D-030), чтобы он дожил до прибытия;
  *   • per-tick декремент etaTicks и `move/arrived` (с `causedBy = moveCause`) делает
  *     уже существующая ветка «в пути» Movement (`every:1`) — Animals её НЕ дублирует.
  * Так цепочка каждого хопа замкнута: `move/departed → move/arrived` (departed — корень,
@@ -60,12 +61,12 @@
  * Непугливый (кабан, `flees:false`) НЕ бежит — стоит (агрессию к человеку разрулит
  * Encounter 1.10; здесь только «не убегаю»). rng НЕ используется: реакция
  * детерминирована наличием угрозы, а не «X% испугаться» (закон №2).
- * ВРЕМЕННЫЙ gap причинности (ревью, ретрофит в 1.10): departure бегства публикуется с
- * `causedBy: null`. По сути это РЕАКЦИЯ на `perception/spotted` (человек в contacts),
- * но `contacts` — холодный ResourceStore и id породившего события не несёт. Линковка
- * flee → `perception/spotted` появится при РЕТРОФИТЕ формы contacts (поле `spottedEvent`,
- * D-030) в 1.10 (тот же ретрофит нужен Encounter). До тех пор экологический драйв
- * бегства трактуется как корень (`null`). Стадность/приплод — законный корень насовсем.
+ * ПРИЧИННОСТЬ ЗАМКНУТА (ретрофит 1.10a, D-037 закрыт): departure бегства публикуется с
+ * `causedBy = Contact.spottedEvent` человека-угрозы — id того `perception/spotted`,
+ * что известил животное о человеке (форма contacts несёт `spottedEvent` по D-030).
+ * Цепочка «человек двинулся → `move/*` → `perception/spotted` → олень бежит
+ * (`move/departed.causedBy = spottedEvent`)» замкнута; при `spottedEvent === 0` (нет
+ * id) — `null`. Стадность/приплод — законный корень (`null`) насовсем.
  *
  * ── СТАДНОСТЬ ────────────────────────────────────────────────────────────────
  * Отставшее (не в мажоритарной локации стада) стоящее животное departure'ит ПЕРВЫМ
@@ -107,7 +108,7 @@
  * пороги/периодичность). `phase(herd)` — фиксированная функция id, НЕ случайность.
  */
 
-import type { EntityId, LocationId } from '@zona/shared';
+import type { Contact, EntityId, EventId, LocationId } from '@zona/shared';
 import type { System, SystemCtx } from '../core/system';
 import type { EventBus } from '../core/events';
 import {
@@ -228,32 +229,48 @@ function safestNeighbor(loc: LocationId): LocationId | undefined {
   return best;
 }
 
-/** true, если среди контактов животного есть ЖИВОЙ человек (D-029: валидируем existsEntity). */
-function humanInContacts(world: SystemCtx['world'], eid: EntityId): boolean {
-  const contacts = world.resources.get<readonly EntityId[]>(CONTACTS_KEY, eid);
-  if (contacts === undefined) return false;
-  for (const other of contacts) {
-    // Контакт мог держать eid только что погибшей сущности (≤1 тик, D-029) —
-    // существование обязательно проверить ДО адресации, иначе сошлёмся на покойника.
-    if (!existsEntity(world.ecs, other)) continue;
-    if (hasComponent(world.ecs, Human, other)) return true;
+/**
+ * Ищет ЖИВОГО человека-угрозу среди контактов животного (D-029: валидируем
+ * existsEntity — контакт мог держать eid только что погибшей сущности ≤1 тик).
+ * Возвращает `spottedEvent` первого такого человека (contacts сорт. по target ⇒
+ * детерминированно min-target), чтобы бегство сослалось на породивший
+ * `perception/spotted` (D-030). Нет живого человека → `-1` (сентинел «не бежать»);
+ * человек есть, но `spottedEvent === 0` (нет id) → `0` (бежать, но causedBy = null).
+ * EventId всегда >= 0, поэтому `-1` однозначно отличает «человека нет».
+ */
+function humanThreatSpottedEvent(world: SystemCtx['world'], eid: EntityId): number {
+  const contacts = world.resources.get<readonly Contact[]>(CONTACTS_KEY, eid);
+  if (contacts === undefined) return -1;
+  for (const c of contacts) {
+    // Существование обязательно проверить ДО адресации, иначе сошлёмся на покойника.
+    if (!existsEntity(world.ecs, c.target)) continue;
+    if (hasComponent(world.ecs, Human, c.target)) return c.spottedEvent;
   }
-  return false;
+  return -1;
 }
 
 /**
  * «Departure» стоящего животного в соседний шаг `step`: ставит транзит и публикует
- * `move/departed` (causedBy: null — экологический драйв корень), штампуя его id в
+ * `move/departed` с переданной причиной `causedBy`, штампуя его id в
  * `Position.moveCause` (доживёт до прибытия, где Movement 1.4 возьмёт его в
  * `move/arrived.causedBy`, D-030). Декремент/прибытие — ветка «в пути» Movement.
+ * `causedBy`: для БЕГСТВА — id `perception/spotted` человека-угрозы (из
+ * `Contact.spottedEvent`, ретрофит 1.10a); для стадности — `null` (экологический
+ * драйв корень цепочки, закон №2).
  */
-function departTo(bus: EventBus, eid: EntityId, from: LocationId, step: LocationId): void {
+function departTo(
+  bus: EventBus,
+  eid: EntityId,
+  from: LocationId,
+  step: LocationId,
+  causedBy: EventId | null,
+): void {
   const eta = Math.max(MIN_TRAVEL_TICKS, MAP_GRAPH.weight(from, step));
   POS.dest[eid] = step;
   POS.etaTicks[eid] = eta;
   const id = bus.publish({
     type: 'move/departed',
-    causedBy: null,
+    causedBy,
     payload: { eid, from, to: step },
   });
   stampCause(Position, 'moveCause', eid, id);
@@ -340,13 +357,20 @@ export const Animals: System = {
 
       // БЕГСТВО приоритетнее: пугливый + живой человек в contacts → уходим в
       // безопаснейшего соседа. Departure заканчивает обработку этого животного.
-      if (species.flees && humanInContacts(world, eid)) {
-        const safe = safestNeighbor(loc as LocationId);
-        if (safe !== undefined) {
-          departTo(bus, eid, loc as LocationId, safe);
-          continue;
+      if (species.flees) {
+        const spottedEvent = humanThreatSpottedEvent(world, eid);
+        if (spottedEvent >= 0) {
+          const safe = safestNeighbor(loc as LocationId);
+          if (safe !== undefined) {
+            // Причинность замкнута (D-030): departure бегства ссылается на
+            // perception/spotted человека-угрозы (из Contact.spottedEvent). 0 = нет
+            // id ⇒ null (корень). Цепочка: человек двинулся → spotted → олень бежит.
+            const causedBy = spottedEvent > 0 ? (spottedEvent as EventId) : null;
+            departTo(bus, eid, loc as LocationId, safe, causedBy);
+            continue;
+          }
+          // Соседей нет (изолятов на карте нет) — падаем в пастьбу как обычно.
         }
-        // Соседей нет (изолятов на карте нет) — падаем в пастьбу как обычно.
       }
 
       // ПАСТЬБА (стоит, не бежит): корм из среды локации, вода если есть.
@@ -370,7 +394,8 @@ export const Animals: System = {
       const majLoc = herdMajorityLoc(locCounts);
       if (majLoc !== loc) {
         const step = firstStep(MAP_GRAPH, loc, majLoc);
-        if (step !== undefined) departTo(bus, eid, loc as LocationId, step as LocationId);
+        // Стадность — корень цепочки (эндогенный экологический драйв, закон №2).
+        if (step !== undefined) departTo(bus, eid, loc as LocationId, step as LocationId, null);
       }
     }
 

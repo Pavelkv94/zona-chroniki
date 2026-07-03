@@ -20,8 +20,11 @@
  * новыми членами с уникальным `type` и своим `payload`. Фаза 1: система Movement
  * (1.4) добавляет `move/departed` (сущность вышла из локации в соседнюю) и
  * `move/arrived` (сущность достигла соседней локации). Причинность (закон №6):
- * `move/departed.causedBy` → событие выбора задачи (`task/selected` из 1.8) или
- * `null`; `move/arrived.causedBy` → соответствующий `move/departed` этого шага.
+ * `move/departed.causedBy` → событие выбора задачи (`task/selected` из 1.8), для
+ * departure ЖИВОТНОГО (Animals 1.9) — `perception/spotted` при БЕГСТВЕ от человека
+ * (ретрофит 1.10a: id взят из `Contact.spottedEvent`, D-030), либо `null` (корень:
+ * стадность/приплод/иной экологический драйв); `move/arrived.causedBy` →
+ * соответствующий `move/departed` этого шага.
  * Задача 1.6 (система Weather) добавляет `weather/changed` (среда сменила погоду);
  * `causedBy` → предыдущий `weather/changed` в логе (цепочка смен), `null` — первая
  * смена в истории мира (корень цепочки погоды). Задача 1.7 (система Perception)

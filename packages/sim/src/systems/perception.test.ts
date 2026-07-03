@@ -20,7 +20,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import type { EntityId, Seed, SimEvent } from '@zona/shared';
+import type { Contact, EntityId, Seed, SimEvent } from '@zona/shared';
 import { createSimWorld, destroyEntity, type SimWorld } from '../core/world';
 import { spawnEntity, addComponent, existsEntity } from '../core/ecs';
 import { Position, Needs as NeedsComponent, Animal, Task, TaskKind } from '../core/components';
@@ -74,9 +74,14 @@ function perceptionScheduler() {
   return s;
 }
 
-/** Текущие контакты сущности из ResourceStore. */
+/** Сырые записи контактов сущности (форма 1.10a: `Contact[]` сорт. по target). */
+function contactRecords(world: SimWorld, eid: EntityId): readonly Contact[] {
+  return world.resources.get<Contact[]>('contacts', eid) ?? [];
+}
+
+/** Текущие контакты сущности как список target-eid (для проверок видимости). */
 function contacts(world: SimWorld, eid: EntityId): readonly number[] {
-  return world.resources.get<number[]>('contacts', eid) ?? [];
+  return contactRecords(world, eid).map((c) => c.target);
 }
 
 /** События perception/spotted указанного observer из лога, в порядке публикации. */
@@ -228,6 +233,84 @@ describe('perception/spotted: ровно на новый контакт', () => 
     const causeEv = w.bus.log.find((e) => e.id === cause)!;
     expect(['move/departed', 'move/arrived']).toContain(causeEv.type);
     expect((causeEv.payload as { eid: number }).eid).toBe(mover);
+  });
+});
+
+describe('форма 1.10a: contacts = Contact[] со стабильным spottedEvent (D-030)', () => {
+  it('запись нового контакта: spottedEvent = id опубликованного perception/spotted', () => {
+    const w = createSimWorld(60 as Seed);
+    const a = place(w, 4);
+    const b = place(w, 4);
+    perceptionScheduler().run(w, 1);
+    // Форма записи — {target, spottedEvent}, сорт. по target.
+    const recA = contactRecords(w, a);
+    expect(recA).toHaveLength(1);
+    expect(recA[0]!.target).toBe(b);
+    // spottedEvent указывает на реальное perception/spotted этого наблюдателя.
+    const sa = spottedOf(w, a);
+    expect(sa).toHaveLength(1);
+    expect(recA[0]!.spottedEvent).toBe(sa[0]!.id);
+    expect(recA[0]!.spottedEvent).toBeGreaterThan(0);
+    // Симметрично для b.
+    const recB = contactRecords(w, b);
+    expect(recB[0]!.spottedEvent).toBe(spottedOf(w, b)[0]!.id);
+  });
+
+  it('spottedEvent СТАБИЛЕН, пока контакт держится (не перештамповывается)', () => {
+    const w = createSimWorld(61 as Seed);
+    const a = place(w, 4);
+    place(w, 4);
+    const sched = perceptionScheduler();
+    sched.run(w, 1);
+    const first = contactRecords(w, a)[0]!.spottedEvent;
+    expect(first).toBeGreaterThan(0);
+    // Много тиков удержания — spottedEvent не меняется, spotted не дублируется.
+    sched.run(w, 100);
+    expect(contactRecords(w, a)[0]!.spottedEvent).toBe(first);
+    expect(spottedOf(w, a)).toHaveLength(1);
+  });
+
+  it('контакт ушёл и вернулся → НОВЫЙ spottedEvent (второе perception/spotted)', () => {
+    const w = createSimWorld(62 as Seed);
+    const a = place(w, 4);
+    const b = place(w, 4);
+    const sched = perceptionScheduler();
+    sched.run(w, 1);
+    const firstEvent = contactRecords(w, a)[0]!.spottedEvent;
+
+    // b ушёл в не-смежную локацию — контакт пропал.
+    POS.loc[b] = 9;
+    POS.dest[b] = 9;
+    sched.run(w, 1);
+    expect(contactRecords(w, a)).toHaveLength(0);
+
+    // b вернулся — контакт снова НОВЫЙ ⇒ новое событие и новый spottedEvent.
+    POS.loc[b] = 4;
+    POS.dest[b] = 4;
+    sched.run(w, 1);
+    const sa = spottedOf(w, a);
+    expect(sa).toHaveLength(2);
+    const secondEvent = contactRecords(w, a)[0]!.spottedEvent;
+    expect(secondEvent).not.toBe(firstEvent);
+    expect(secondEvent).toBe(sa[1]!.id); // указывает на ВТОРОЕ spotted
+  });
+
+  it('RESUME: spottedEvent держащегося контакта переживает save/load (в записи)', () => {
+    const w = createSimWorld(63 as Seed);
+    const a = place(w, 4);
+    place(w, 4);
+    const sched = perceptionScheduler();
+    sched.run(w, 3); // контакт сформирован и держится
+    const before = contactRecords(w, a)[0]!.spottedEvent;
+    expect(before).toBeGreaterThan(0);
+
+    const resumed = deserialize(serialize(w));
+    // spottedEvent восстановлен из сериализованной записи — тот же id.
+    expect(contactRecords(resumed, a)[0]!.spottedEvent).toBe(before);
+    // Продолжаем: контакт держится ⇒ spottedEvent НЕ перештамповывается, дубля нет.
+    perceptionScheduler().run(resumed, 20);
+    expect(contactRecords(resumed, a)[0]!.spottedEvent).toBe(before);
+    expect(spottedOf(resumed, a)).toHaveLength(1);
   });
 });
 
@@ -541,7 +624,7 @@ describe('пустой контакт перезаписывается КАЖД�
     // Перезаписан пустым, а не оставлен старым [b] — иначе следующий приход b не
     // считался бы «новым» и spotted не выстрелил бы (регресс детекции).
     expect(contacts(w, a)).toEqual([]);
-    expect(w.resources.get<number[]>('contacts', a)).not.toContain(b);
+    expect(contacts(w, a)).not.toContain(b);
   });
 });
 

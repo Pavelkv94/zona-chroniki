@@ -19,13 +19,16 @@
  * (сорт. по eid ⇒ каждый бакет уже отсортирован), локации-ключи обходятся по
  * возрастанию, контакты и события упорядочены по eid.
  *
- * ── Контакты (COLD в ResourceStore, D-023) ───────────────────────────────────
- * Для каждой сущности контакт = ОТСОРТИРОВАННЫЙ массив eid: все ДРУГИЕ co-located
- * (та же `loc`) + сущности из СМЕЖНОЙ локации, идущие сюда (`Position.dest === loc`
- * наблюдателя — приближаются). Пишется `world.resources.set('contacts', eid, …)`.
+ * ── Контакты (COLD в ResourceStore, D-023; форма 1.10a — `Contact[]`, D-030) ──
+ * Для каждой сущности контакт = ОТСОРТИРОВАННЫЙ ПО `target` массив записей
+ * `Contact = { target, spottedEvent }`: все ДРУГИЕ co-located (та же `loc`) +
+ * сущности из СМЕЖНОЙ локации, идущие сюда (`Position.dest === loc` наблюдателя —
+ * приближаются). Пишется `world.resources.set('contacts', eid, Contact[])`.
  * Контакты пишутся КАЖДЫЙ тик для КАЖДОГО носителя Position (в т.ч. пустой `[]`):
  * store всегда отражает текущий тик, поэтому переживает save/load тождественно
  * (иначе устаревший контакт «залип» бы в store — рассинхрон resume, закон №8).
+ * `spottedEvent` — id породившего `perception/spotted` (D-030): реакции на контакт
+ * (бегство Animals 1.9, будущий Encounter) берут его в `causedBy` без скана лога.
  *
  * ── perception/spotted РОВНО на новый контакт (resume-безопасно, закон №8) ────
  * `spotted` публикуется, только когда `target` ПОЯВИЛСЯ в `contacts[observer]`,
@@ -38,6 +41,13 @@
  * Контакт пропал и снова возник ⇒ снова «новый» ⇒ новое событие. `causedBy` —
  * последнее релевантное `move/*` наблюдателя ИЛИ цели из лога (движение свело их
  * в поле зрения), либо `null`.
+ *
+ * ── spottedEvent стабилен, пока контакт держится (D-030, resume-safe) ─────────
+ * Для НОВОГО контакта в запись пишется id ТОЛЬКО ЧТО опубликованного
+ * `perception/spotted`. Для УЖЕ ДЕРЖАЩЕГОСЯ (target был в прошлых contacts) —
+ * прежний `spottedEvent` ПЕРЕНОСИТСЯ из прошлой записи, НЕ перештамповывается: id
+ * причины постоянен, пока контакт держится. Значение живёт в самой записи
+ * (сериализуется), поэтому после resume потребитель читает тот же id (закон №8).
  *
  * ── Страх от угрозы (закон №2, ставка из balance — закон №7) ──────────────────
  * Если рядом (co-located) есть УГРОЗА — `Needs.fear` носителя растёт на
@@ -52,7 +62,7 @@
  * выстрела). Тайминг в системе не мерится (D-006).
  */
 
-import type { EntityId, EventId, LocationId } from '@zona/shared';
+import type { Contact, EntityId, EventId, LocationId } from '@zona/shared';
 import type { System, SystemCtx } from '../core/system';
 import type { EventBus } from '../core/events';
 import { queryEntities, hasComponent } from '../core/ecs';
@@ -134,37 +144,45 @@ function mergeContacts(
 }
 
 /**
- * Публикует `perception/spotted` для КАЖДОГО eid, что есть в `current`, но НЕ в
- * `prev` — новые контакты этого тика. Оба массива отсортированы по возрастанию ⇒
- * идём двумя указателями (без Set, без аллокаций), выдавая новых в порядке eid.
+ * Строит запись `Contact[]` (сорт. по `target`) текущего тика и публикует
+ * `perception/spotted` для КАЖДОГО НОВОГО контакта (`target` из `currentTargets`,
+ * которого НЕ было в `prev`). Оба входа отсортированы по возрастанию `target` ⇒
+ * идём двумя указателями (без Set, без аллокаций сверх результата):
+ *  • target ДЕРЖИТСЯ (есть в `prev`) — переносим ПРЕЖНИЙ `spottedEvent` (D-030: id
+ *    причины стабилен, пока контакт держится; НЕ перештамповываем);
+ *  • target НОВЫЙ (нет в `prev`) — публикуем `perception/spotted`, штампуем его id
+ *    в `spottedEvent` записи (0 не бывает: publish возвращает EventId >= 1).
  */
-function emitNewContacts(
+function buildContacts(
   bus: EventBus,
   observer: EntityId,
   loc: number,
-  prev: readonly EntityId[],
-  current: readonly EntityId[],
-): void {
-  let i = 0;
-  let j = 0;
-  while (i < current.length) {
-    const cur = current[i] as EntityId;
-    const p = j < prev.length ? (prev[j] as EntityId) : undefined;
-    if (p !== undefined && p < cur) {
-      j++; // контакт из прошлого, которого уже нет в current — пропускаем
-    } else if (p === cur) {
-      i++; // контакт держится с прошлого тика — не новый
+  prev: readonly Contact[],
+  currentTargets: readonly EntityId[],
+): Contact[] {
+  const out: Contact[] = [];
+  let j = 0; // указатель по prev (сорт. по target)
+  for (let i = 0; i < currentTargets.length; i++) {
+    const target = currentTargets[i] as EntityId;
+    // Сдвигаем j за все прошлые контакты, target которых МЕНЬШЕ текущего (они
+    // пропали из current — их запись просто не переносится).
+    while (j < prev.length && (prev[j] as Contact).target < target) j++;
+    const p = j < prev.length ? (prev[j] as Contact) : undefined;
+    if (p !== undefined && p.target === target) {
+      // ДЕРЖИТСЯ: переносим стабильный spottedEvent, событие НЕ публикуем.
+      out.push({ target, spottedEvent: p.spottedEvent });
       j++;
     } else {
-      // p === undefined или p > cur ⇒ cur отсутствовал в prev ⇒ НОВЫЙ контакт.
-      bus.publish({
+      // НОВЫЙ контакт: публикуем spotted и штампуем его id в запись (D-030).
+      const id = bus.publish({
         type: 'perception/spotted',
-        causedBy: spottedCause(bus, observer, cur),
-        payload: { observer, target: cur, loc: loc as LocationId },
+        causedBy: spottedCause(bus, observer, target),
+        payload: { observer, target, loc: loc as LocationId },
       });
-      i++;
+      out.push({ target, spottedEvent: id });
     }
   }
+  return out;
 }
 
 /**
@@ -226,12 +244,13 @@ export const Perception: System = {
 
         // ПРЕДЫДУЩИЕ контакты — из ResourceStore (сериализуемы ⇒ resume-безопасно),
         // читаем ДО перезаписи. Нет записи (новый носитель/первый тик) ⇒ пусто.
-        const prev = world.resources.get<EntityId[]>(CONTACTS_KEY, observer) ?? [];
+        const prev = world.resources.get<Contact[]>(CONTACTS_KEY, observer) ?? [];
 
-        // Публикуем spotted на КАЖДЫЙ новый контакт (current \ prev), затем
+        // Строим Contact[] текущего тика: новым контактам публикуем spotted и
+        // штампуем его id, держащимся переносим прежний spottedEvent (D-030). Затем
         // перезаписываем store текущим срезом (в т.ч. пустым — синхрон с тиком).
-        emitNewContacts(bus, observer, loc, prev, current);
-        world.resources.set(CONTACTS_KEY, observer, current);
+        const contacts = buildContacts(bus, observer, loc, prev, current);
+        world.resources.set(CONTACTS_KEY, observer, contacts);
 
         // СТРАХ: co-located угроза, ОТЛИЧНАЯ от самого наблюдателя, поднимает fear.
         if (hasComponent(world.ecs, Needs, observer)) {
