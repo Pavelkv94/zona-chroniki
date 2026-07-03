@@ -789,3 +789,34 @@ POWER_ACCURACY_REF, MORALE_BREAK_FRACTION, HUMAN_WEAPON_POWER, HUMAN_UNARMED_MEL
 боя. Кандидат: смягчить порог морали для групп <=2 или абсолютный порог потерь.
 Затрагивает: balance/combat.ts (MORALE_BREAK_FRACTION, melee-power), гейт 1.13 (не считать «побегом» дефектом
 причинности), сессия balance-analyst на конце Фазы 1.
+
+## D-041 | Фаза 1 / задача 1.11 | 2026-07-04
+Решение: система Death (ПОСЛЕДНЯЯ в тике, B.1) + ретрофит Needs на lethalCause + события entity/died,
+corpse/created. Death детектит смерть по СОСТОЯНИЮ: носитель тега Alive с Health.hp<=0 (queryEntities([Alive])
+∩ hp<=0, сорт. eid). Преобразование в труп: снять Alive/Needs/Task/Animal, повесить Corpse; ОСТАВИТЬ
+Position + Health(hp<=0 маркер) + ResourceStore name/inventory (лут покойника, закон №3 — НЕ переносим, НЕ
+удаляем). Труп ПЕРСИСТИТ (не destroyEntity) — лут физически существует, летопись ссылается; распад/лутание —
+будущая фаза. Причинность (закон №6, D-030): entity/died.causedBy = Health.lethalCause (0→null); смерть НЕ
+создаёт причину, а НАСЛЕДУЕТ (бой: encounter/resolved штампует Encounters 1.10b; голод/жажда: needs/threshold
+штампует РЕТРОФИТ Needs). Ретрофит Needs: при пересечении hunger/thirst критического порога ВВЕРХ у носителя
+Health — stampCause(Health,'lethalCause',eid,thresholdId); fatigue/fear НЕ штампуют (не убивают). corpse/created.causedBy
+= id entity/died; items = инвентарь [itemId,qty] (сорт.). Метка cause выводится РАЗОВО из типа committed-события
+по lethalCause id (encounter/resolved→combat, needs/threshold→thirst/starvation, id не в логе=внутритиковый штамп
+Encounters→combat, 0→unknown) — метка вторична, causedBy авторитетна.
+Причина: детекция по тегу Alive (сериализуется, 1.0) = resume-safe флаг «уже умер» БЕЗ рантайм-Set (тот не пережил
+бы snapshot → дубль entity/died). После снятия Alive покойник не в queryEntities([Alive]) → нет повторной смерти
+(доказано split≡continuous по хэшу). Death последняя в тике → к её запуску весь урон тика применён.
+Resume-safe: Alive/Corpse/lethalCause сериализуются задачей 1.0.
+Альтернативы: destroyEntity сразу (отклонено — лут исчез бы из воздуха наоборот, летопись повисла бы, закон №3);
+рантайм-Set умерших (отклонено — не переживает save/load, дубль, закон №8); Death создаёт причину смерти
+(отклонено — закон №6, причина у урона/истощения, читаем lethalCause); чтение buffer текущего тика для метки
+combat (невозможно — D-005 отдаёт лог только на endTick; вместо этого «id не в committed-логе ⇒ внутритиковый
+Encounters ⇒ combat», Фаза-1-допущение задокументировано в death.ts).
+Проверка (закон №8): typecheck 0 ошибок; npm run test зелёный, 817 тестов (+30: Death — преобразование/лут/животное-
+без-имени/один-раз/живой-не-мрёт/corpse-items+causedBy/пустой-инвентарь/combat-внутритиковый+через-лог/unknown/
+интеграция-голода-starvation/нет-дубля×3-resume/детерминизм×2); голдены 481914ae (пустой мир) и c5dff40f
+(sim:100days) НЕ сдвинуты (Death/ретрофит вне CLI-прогона; ретрофит срабатывает только у носителей Health при
+пересечении порога — пустой мир их не имеет). НЕ трогали: Encounters (только читаем lethalCause), TaskSelection/
+Animals/Movement, ядро/сериализацию, worldgen.
+Затрагивает: @zona/shared/events.ts (entity/died + corpse/created в union), systems/death.ts (новый),
+systems/needs.ts (ретрофит stampCause на hunger/thirst) + тесты, docs/diagrams/death-1.11.md.

@@ -66,6 +66,6 @@ DoD фазы: прогон 10 дней — 0 idle, NPC выживают охот
 | 1.9 | Animals (стада, пастьба/бегство, причинное размножение) | 1.2,1.7 | ecosystem | ✅ |
 | 1.10a | Ретрофит формы contacts {target,spottedEvent} + flee-причинность (D-030/D-038) | 1.7,1.9 | core | ✅ |
 | 1.10b | Encounter Resolver v1 + Encounters (охота человек-vs-животное, единый интерфейс) | 1.10a,1.8 | economy | ✅ |
-| 1.11 | Death/Corpse (труп с инвентарём, entity/died с causedBy) | 1.10,1.5 | core | ⬜ |
+| 1.11 | Death/Corpse (труп с инвентарём, entity/died с causedBy) | 1.10b,1.5 | core | ✅ |
 | 1.12 | CLI `--log verbose` (человекочитаемый рендер лога) | 1.10 | core (headless) | ⬜ |
 | 1.13 | QA-гейт Фазы 1 (10 дней: 0 idle, выживание охотой, цепочки смертей, детерминизм) | все | qa | ⬜ |

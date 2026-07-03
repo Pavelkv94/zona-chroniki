@@ -28,6 +28,11 @@
  *    этом тике (prev = значение прошлого тика). Пока нужда держится выше — prev
  *    уже >= crit, событие не повторяется; упала ниже и снова выросла — новое
  *    пересечение → новое событие. `causedBy: null` (физиология — корень, №2).
+ *    РЕТРОФИТ ПРИЧИННОСТИ СМЕРТИ (задача 1.11, D-030): при пересечении hunger/thirst
+ *    вверх у носителя Health id порогового события ШТАМПУЕТСЯ в `Health.lethalCause`,
+ *    чтобы позднейшая смерть от истощения (hp<=0, снимает Death 1.11) наследовала
+ *    причину: `entity/died.causedBy = needs/threshold`. fatigue/fear не штампуются —
+ *    они не наносят урона и не убивают. Resume-safe (поле сериализуется, закон №8).
  *  • УРОН ИСТОЩЕНИЯ: hunger >= `HUNGER_CRITICAL` ⇒ hp -= `STARVATION_*`;
  *    thirst >= `THIRST_CRITICAL` ⇒ hp -= `DEHYDRATION_*` (каждый тик, пока выше).
  *    Урон пишется В `Health.hp` ТОЛЬКО носителям Health. Needs НЕ убивает и НЕ
@@ -56,7 +61,7 @@
 import type { EntityId, EventId, NeedKind } from '@zona/shared';
 import type { System, SystemCtx } from '../core/system';
 import type { EventBus } from '../core/events';
-import { queryEntities, hasComponent } from '../core/ecs';
+import { queryEntities, hasComponent, stampCause } from '../core/ecs';
 import { Needs as NeedsComponent, Health } from '../core/components';
 import {
   HUNGER_PER_TICK,
@@ -92,6 +97,10 @@ function clamp(v: number, min: number, max: number): number {
  * накопления заменяет отдельный флаг «уже сообщено» — на следующем тике prev уже
  * >= crit, поэтому повторного события не будет, пока нужда не упадёт ниже и снова
  * не вырастет. `causedBy: null` — физиология корень цепочки (закон №2).
+ *
+ * Возвращает `EventId` опубликованного события (для ретрофита причинности смерти:
+ * hunger/thirst штампуют его в `Health.lethalCause`, см. update), либо `null`, если
+ * пересечения не было.
  */
 function emitIfCrossed(
   bus: EventBus,
@@ -100,14 +109,15 @@ function emitIfCrossed(
   prev: number,
   next: number,
   crit: number,
-): void {
+): EventId | null {
   if (prev < crit && next >= crit) {
-    bus.publish({
+    return bus.publish({
       type: 'needs/threshold',
       causedBy: null,
       payload: { eid, need, level: 'critical' },
     });
   }
+  return null;
 }
 
 /**
@@ -143,15 +153,31 @@ export const Needs: System = {
       // ПОРОГИ: ровно одно событие на пересечение вверх (фикс. порядок нужд).
       // Читаем ОКРУГЛЁННЫЕ до f32 значения из колонок, чтобы детекция совпадала
       // с тем, что уйдёт в снапшот (детерминизм после resume, закон №8).
-      emitIfCrossed(bus, eid, 'hunger', hungerPrev, NEED.hunger[eid] as number, HUNGER_CRITICAL);
-      emitIfCrossed(bus, eid, 'thirst', thirstPrev, NEED.thirst[eid] as number, THIRST_CRITICAL);
+      const hungerCrossId = emitIfCrossed(bus, eid, 'hunger', hungerPrev, NEED.hunger[eid] as number, HUNGER_CRITICAL);
+      const thirstCrossId = emitIfCrossed(bus, eid, 'thirst', thirstPrev, NEED.thirst[eid] as number, THIRST_CRITICAL);
+      // fatigue тоже даёт порог, но НЕ штампуется как lethalCause: усталость не убивает
+      // (урона нет), поэтому её id не наследуется смертью (fear порога здесь не даёт).
       emitIfCrossed(bus, eid, 'fatigue', fatiguePrev, NEED.fatigue[eid] as number, FATIGUE_CRITICAL);
+
+      // РЕТРОФИТ ПРИЧИННОСТИ СМЕРТИ (закон №6, D-030): при пересечении hunger/thirst
+      // вверх штампуем id только что опубликованного `needs/threshold` в
+      // `Health.lethalCause`. Когда истощение позже добьёт hp<=0, Death (1.11) возьмёт
+      // это поле как `entity/died.causedBy` — голодная/жаждущая смерть становится
+      // ОБЪЯСНИМОЙ (цепочка `needs/threshold` → `entity/died`), а не «без причины».
+      // Штампуем ТОЛЬКО носителям Health (кому есть что убивать); поле сериализуется →
+      // resume-safe. Пересечение thirst (позже в порядке) перекрывает hunger — актуальна
+      // последняя критическая нужда, ведущая к смерти. Урон истощения ниже — тем же гейтом.
+      const hasHealth = hasComponent(world.ecs, Health, eid);
+      if (hasHealth) {
+        if (hungerCrossId !== null) stampCause(Health, 'lethalCause', eid, hungerCrossId);
+        if (thirstCrossId !== null) stampCause(Health, 'lethalCause', eid, thirstCrossId);
+      }
 
       // УРОН ИСТОЩЕНИЯ (только голод/жажда, только носителям Health). Не клампуем
       // hp снизу: уход в <= 0 — сигнал Death (1.11); Needs лишь пишет число.
       const starving = (NEED.hunger[eid] as number) >= HUNGER_CRITICAL;
       const dehydrated = (NEED.thirst[eid] as number) >= THIRST_CRITICAL;
-      if ((starving || dehydrated) && hasComponent(world.ecs, Health, eid)) {
+      if ((starving || dehydrated) && hasHealth) {
         let hp = HP.hp[eid] as number;
         if (starving) hp -= STARVATION_DAMAGE_PER_TICK;
         if (dehydrated) hp -= DEHYDRATION_DAMAGE_PER_TICK;

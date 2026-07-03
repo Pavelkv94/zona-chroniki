@@ -46,7 +46,7 @@
  * ```
  */
 
-import type { EntityId, EventId, LocationId, Tick } from './ids';
+import type { EntityId, EventId, ItemId, LocationId, Tick } from './ids';
 
 /**
  * Вид физиологической нужды (дискриминант в `needs/threshold`). Совпадает с
@@ -207,4 +207,46 @@ export type SimEvent =
        * генерация среды Weather), а не следствие другого события.
        */
       payload: { readonly eid: EntityId; readonly herd: number; readonly loc: LocationId };
+    })
+  | (SimEventBase & {
+      type: 'entity/died';
+      /**
+       * Сущность `eid` УМЕРЛА (задача 1.11, система Death): её `Health.hp <= 0` и она
+       * ещё несла тег `Alive`. Death снимает `Alive`/`Needs`/`Task`/`Animal`, вешает
+       * `Corpse` и публикует это событие РОВНО ОДИН раз (детекция «жив И hp<=0»; после
+       * снятия `Alive` сущность больше не переопределяется как «только что умершая» —
+       * resume-safe без рантайм-флага, закон №8). Смерть НЕ порождает свою причину
+       * (закон №6): она НАСЛЕДУЕТ её от урона/истощения, добравшего носителя, поэтому
+       * `causedBy` = `Health.lethalCause` (id `encounter/resolved` для боя или
+       * `needs/threshold` для голода/жажды, штамп D-030), либо `null`, если причина не
+       * проштампована (0). `name` — имя покойника (закон №4: у человека есть имя-
+       * фамилия; у животного имени нет — поле опущено) для летописи. `cause` —
+       * ПРОИЗВОДНАЯ метка вида причины (`'combat'`/`'starvation'`/`'thirst'`/`'unknown'`),
+       * выведенная из типа события-причины; АВТОРИТЕТНА связь через `causedBy`, метка
+       * вторична. `killer` — eid убийцы, если извлекаем (Фаза 1 обычно опускает).
+       */
+      payload: {
+        readonly eid: EntityId;
+        readonly name?: string;
+        readonly cause: 'combat' | 'starvation' | 'thirst' | 'unknown';
+        readonly killer?: EntityId;
+      };
+    })
+  | (SimEventBase & {
+      type: 'corpse/created';
+      /**
+       * Из умершей сущности `eid` возник ТРУП в локации `loc` (задача 1.11, система
+       * Death). Труп ПЕРСИСТИТ (тег `Corpse` + `Position` + `Health` с hp<=0 +
+       * `name`/`inventory` в ResourceStore): лут покойника ФИЗИЧЕСКИ остаётся на трупе
+       * (закон №3 — ничего из воздуха, инвентарь не исчезает и не переносится), а
+       * летопись может ссылаться на существующий труп. `items` — инвентарь покойника
+       * парами `[itemId, qty]` (сорт. по itemId, как в ResourceStore), пустой массив —
+       * если инвентаря нет. Распад/лутание трупов — будущая фаза. `causedBy` → id
+       * `entity/died` этой же смерти (труп есть следствие смерти).
+       */
+      payload: {
+        readonly eid: EntityId;
+        readonly loc: LocationId;
+        readonly items: ReadonlyArray<readonly [ItemId, number]>;
+      };
     });
