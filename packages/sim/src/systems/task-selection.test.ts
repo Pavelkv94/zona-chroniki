@@ -124,12 +124,23 @@ function taskEvents(world: SimWorld, eid: EntityId): readonly SimEvent[] {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('объяснимость: выбор выводится из состояния (закон №2)', () => {
-  it('голодный с едой в инвентаре → EAT (на месте)', () => {
+  it('голодный с едой (и дичь рядом) → EAT: доедает запас, а не идёт на охоту (D-034)', () => {
     const w = createSimWorld(1 as Seed);
-    const eid = placeStalker(w, { loc: 0, hunger: 85, thirst: 10, fatigue: 10, food: true });
+    // loc3 без воды, дичь рядом. С едой EAT масштабируется голодом и бьёт HUNT.
+    const eid = placeStalker(w, { loc: 3, hunger: 85, thirst: 10, fatigue: 10, survival: 0.3, food: true });
+    placeAnimal(w, 3); // дичь под боком — но еда в рюкзаке рациональнее
     evalAt(w, DAY_TICK);
     expect(TSK.kind[eid]).toBe(TaskKind.EAT);
-    expect(TSK.targetLoc[eid]).toBe(0); // на месте
+    expect(TSK.targetLoc[eid]).toBe(3); // на месте
+  });
+
+  it('СЫТЫЙ с едой (hunger≈0) НЕ выбирает EAT — не переедает (D-034)', () => {
+    const w = createSimWorld(1 as Seed);
+    // loc7: нет воды, опасно (низкая тяга ко сну), дичи нет ⇒ выбор среди fallback.
+    const eid = placeStalker(w, { loc: 7, hunger: 0, survival: 0.3, food: true });
+    evalAt(w, DAY_TICK);
+    expect(TSK.kind[eid]).not.toBe(TaskKind.EAT); // еда есть, но голода нет
+    expect([TaskKind.FORAGE, TaskKind.REST]).toContain(TSK.kind[eid] as number);
   });
 
   it('голодный БЕЗ еды, дичь в соседней локации → HUNT (target = локация дичи)', () => {
@@ -467,22 +478,24 @@ function placeBareHuman(world: SimWorld, o: { loc: number; hunger?: number; fati
 // ───────────────────────────────────────────────────────────────────────────
 describe('argmax tie-break: РАЗНАЯ пара задач (EAT<DRINK), меньший код на равенстве', () => {
   // Кордон (loc0, вода, safety 0.95). С едой в инвентаре и точно подобранными
-  // нуждами EAT и DRINK сходятся бит-в-бит: EAT=0.4·(45/100)+0.3=0.48;
-  // DRINK=0.45·(40/100)+1·0.3=0.48 (умножение IEEE754 коммутативно ⇒ точный тай).
-  // Побеждает EAT (код 1 < DRINK 2) — тай-брейк работает и НЕ только на SLEEP/REST.
-  it('EAT==DRINK (hunger=45,thirst=40) → EAT (меньший код), детерминированно 3 прогона', () => {
+  // нуждами EAT и DRINK сходятся бит-в-бит под НОВОЙ формулой EAT (D-034):
+  // EAT=(0.4+0.3)·(66/100)=0.46199999999999997; DRINK=0.45·(36/100)+1·0.3 то же
+  // значение (проверено brute-force IEEE754). Оба — глобальный максимум (SLEEP
+  // 0.285, REST 0.1). Побеждает EAT (код 1 < DRINK 2) — тай-брейк работает и НЕ
+  // только на SLEEP/REST.
+  it('EAT==DRINK (hunger=66,thirst=36) → EAT (меньший код), детерминированно 3 прогона', () => {
     for (let i = 0; i < 3; i++) {
       const w = createSimWorld((200 + i) as Seed);
-      const eid = placeStalker(w, { loc: 0, hunger: 45, thirst: 40, fatigue: 0, food: true });
+      const eid = placeStalker(w, { loc: 0, hunger: 66, thirst: 36, fatigue: 0, food: true });
       evalAt(w, DAY_TICK);
       expect(TSK.kind[eid]).toBe(TaskKind.EAT);
       expect(TSK.targetLoc[eid]).toBe(0);
     }
   });
 
-  it('НЕ вырожденный контест: сдвинь жажду выше (thirst=45>hunger=40) → DRINK перевешивает', () => {
+  it('НЕ вырожденный контест: жажда выше (thirst=50) → DRINK перевешивает EAT', () => {
     const w = createSimWorld(201 as Seed);
-    const eid = placeStalker(w, { loc: 0, hunger: 40, thirst: 45, fatigue: 0, food: true });
+    const eid = placeStalker(w, { loc: 0, hunger: 66, thirst: 50, fatigue: 0, food: true });
     evalAt(w, DAY_TICK);
     expect(TSK.kind[eid]).toBe(TaskKind.DRINK); // тай-брейк не «залипает» на EAT
   });

@@ -20,7 +20,7 @@
  * ── Оценки (веса ТОЛЬКО из balance/utility.ts, закон №7) ─────────────────────
  * Нужды нормируются делением на NEED_MAX ∈ [0..1]; safety(loc)=1-danger. Формулы:
  *   SLEEP  = W.fatigue·fatigue + (night?W.night:0) + safety·W.safe
- *   EAT    = W.hunger·hunger + W.food             (ТОЛЬКО если в инвентаре есть еда)
+ *   EAT    = (W.hunger + W.food)·hunger    (ТОЛЬКО если в инвентаре есть еда)
  *   DRINK  = W.thirst·thirst + waterHere·W.water
  *   HUNT   = W.hunger·hunger + gameAbund·W.game + survival·W.skill
  *            − fear·W.fear − (night?W.nightHunt:0)  (ТОЛЬКО если есть достижимая дичь)
@@ -31,6 +31,13 @@
  * то, чего нет (закон №3), и нельзя охотиться там, где дичи нет. Два fallback'а
  * (FORAGE/REST) СТРОГО положительны, поэтому argmax НИКОГДА не пуст — idle
  * невозможен (закон №4, D-020).
+ *
+ * Привлекательность EAT ПРОПОРЦИОНАЛЬНА голоду `(W.hunger+W.food)·hunger`, а НЕ
+ * плоское слагаемое: при `hunger≈0` EAT→0 и проигрывает fallback'у (сытый НЕ ест
+ * впустую — иначе TaskEffects 1.8e сжёг бы запас еды на нуле голода, необоснованная
+ * потеря ресурса, спирит закона №3). При реальном голоде бонус `W.food` (тоже
+ * масштабированный голодом) поднимает EAT НАД HUNT — рационально доесть запас,
+ * прежде чем идти на риск охоты (D-034).
  *
  * ── Детерминированный argmax (закон №8, D-020) ───────────────────────────────
  * Выбор — задача с наибольшей оценкой. При РАВЕНСТВЕ — МЕНЬШИЙ код TaskKind
@@ -236,7 +243,9 @@ export const TaskSelection: System = {
 
       // ── Оценки (веса из balance/utility, закон №7) ─────────────────────────
       const sSleep = W.fatigue * fatigue + (night ? W.night : 0) + safety * W.safe;
-      const sEat = foodInInv ? W.hunger * hunger + W.food : -Infinity;
+      // EAT масштабируется голодом (D-034): при hunger≈0 → ~0 (не переедаем), при
+      // голоде бонус W.food поднимает EAT над HUNT (доесть запас раньше охоты).
+      const sEat = foodInInv ? (W.hunger + W.food) * hunger : -Infinity;
       const sDrink = W.thirst * thirst + waterHere * W.water;
       const sHunt =
         hunt !== null
