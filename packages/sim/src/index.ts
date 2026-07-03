@@ -60,3 +60,7 @@ export type { SnapshotJSON, JsonValue, ComponentColumnJSON } from '@zona/shared'
 // Балансовые константы времени (закон №7). Публичны: headless-CLI переводит
 // `--days N` в тики через `TICKS_PER_DAY`, не хардкодя 1440.
 export { TICKS_PER_DAY } from './balance/time';
+
+// Стартовая генерация мира (1.3). Вызывается ОДИН раз при сборке мира (CLI 1.12)
+// до первого тика: населяет пустой SimWorld сталкерами/животными/часами мира.
+export { worldgen } from './worldgen';

@@ -55,7 +55,7 @@ DoD фазы: прогон 10 дней — 0 idle, NPC выживают охот
 | 1.0 | Реестр компонентов + сериализация SoA (снять fail-fast D-016, resume round-trip) | — | core | ✅ |
 | 1.1 | data JSON (map/items/species/names) + загрузчик + balance-константы | — | core (+ecosystem) | ✅ |
 | 1.2 | Определения компонентов (Position/Needs/Health/Task/Skills/Home/Animal/WorldClock+теги) | 1.0 | core | ✅ |
-| 1.3 | worldgen: 20 сталкеров (имена, инвентарь-источник), стада, расстановка от seed | 1.1,1.2 | behavior | ⬜ |
+| 1.3 | worldgen: 20 сталкеров (имена, инвентарь-источник), стада, расстановка от seed | 1.1,1.2 | behavior | ✅ |
 | 1.4 | Movement (переход по графу, etaTicks, departed/arrived) | 1.1,1.2 | core | ✅ |
 | 1.5 | Needs (голод/жажда/усталость/страх, пороги, урон истощения) | 1.2 | behavior | ✅ |
 | 1.6 | Weather/DayNight (погода в WorldClock, isNight из tick) | 1.2 | core | ✅ |

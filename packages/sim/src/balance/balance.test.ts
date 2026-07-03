@@ -15,7 +15,7 @@ import * as weather from './weather';
 import * as movement from './movement';
 import * as worldgen from './worldgen';
 import { TICKS_PER_DAY } from './time';
-import { getItem, getSpecies } from '../data/index';
+import { getItem, getSpecies, getFaction, getProfession } from '../data/index';
 
 describe('needs: ставки и пороги', () => {
   it('все ставки роста нужд строго > 0', () => {
@@ -154,5 +154,18 @@ describe('worldgen: связность с данными (закон №3/№10)
   it('точка входа — валидная локация', () => {
     expect(worldgen.ENTRY_LOCATION).toBeGreaterThanOrEqual(0);
     expect(worldgen.ENTRY_LOCATION).toBeLessThan(10);
+  });
+
+  it('стартовая фракция резолвится из factions.json (закон №10)', () => {
+    expect(() => getFaction(worldgen.STARTING_FACTION_ID)).not.toThrow();
+    expect(getFaction(worldgen.STARTING_FACTION_ID).id).toBe(worldgen.STARTING_FACTION_ID);
+  });
+
+  it('каждая стартовая профессия резолвится из professions.json (закон №10)', () => {
+    expect(worldgen.STARTING_PROFESSION_IDS.length).toBeGreaterThan(0);
+    for (const id of worldgen.STARTING_PROFESSION_IDS) {
+      expect(() => getProfession(id)).not.toThrow();
+      expect(getProfession(id).id).toBe(id);
+    }
   });
 });

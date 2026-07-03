@@ -15,11 +15,15 @@ import {
   ITEMS,
   SPECIES,
   NAMES,
+  FACTIONS,
+  PROFESSIONS,
   getLocation,
   neighbors,
   edgeLen,
   getItem,
   getSpecies,
+  getFaction,
+  getProfession,
   isConnected,
 } from './index';
 import { THIRST_PER_TICK, THIRST_CRITICAL } from '../balance/needs';
@@ -437,5 +441,48 @@ describe('заморозка ГЛУБОКАЯ: мутация вложенных
     }).toThrow();
     expect(Object.isFrozen(NAMES.first)).toBe(true);
     expect(Object.isFrozen(NAMES.last)).toBe(true);
+  });
+});
+
+describe('фракции и профессии (контент, закон №10)', () => {
+  it('FACTIONS: непустой список, уникальные непустые id и name, заморожен', () => {
+    expect(FACTIONS.length).toBeGreaterThan(0);
+    const ids = new Set<string>();
+    for (const f of FACTIONS) {
+      expect(f.id.length).toBeGreaterThan(0);
+      expect(f.name.length).toBeGreaterThan(0);
+      expect(ids.has(f.id)).toBe(false);
+      ids.add(f.id);
+      expect(Object.isFrozen(f)).toBe(true);
+    }
+    expect(Object.isFrozen(FACTIONS)).toBe(true);
+  });
+
+  it('PROFESSIONS: непустой список, уникальные непустые id и name, заморожен', () => {
+    expect(PROFESSIONS.length).toBeGreaterThan(0);
+    const ids = new Set<string>();
+    for (const p of PROFESSIONS) {
+      expect(p.id.length).toBeGreaterThan(0);
+      expect(p.name.length).toBeGreaterThan(0);
+      expect(ids.has(p.id)).toBe(false);
+      ids.add(p.id);
+      expect(Object.isFrozen(p)).toBe(true);
+    }
+    expect(Object.isFrozen(PROFESSIONS)).toBe(true);
+  });
+
+  it('стартовая фракция loners присутствует и резолвится', () => {
+    expect(() => getFaction('loners')).not.toThrow();
+    expect(getFaction('loners').id).toBe('loners');
+  });
+
+  it('getFaction/getProfession бросают на неизвестном id (закон №10)', () => {
+    expect(() => getFaction('__нет_такой__')).toThrow();
+    expect(() => getProfession('__нет_такой__')).toThrow();
+  });
+
+  it('каждая запись резолвится через свой геттер', () => {
+    for (const f of FACTIONS) expect(getFaction(f.id)).toBe(f);
+    for (const p of PROFESSIONS) expect(getProfession(p.id)).toBe(p);
   });
 });

@@ -114,6 +114,26 @@ export interface SpeciesData {
   readonly meatYield: number;
 }
 
+/**
+ * Запись фракции (`factions.json`, закон №10 — фракции это КОНТЕНТ). `id` —
+ * абстрактная ссылка (совпадает с `FactionId`), `name` — атмосферное имя. Фаза 1
+ * несёт одну фракцию (одиночки); множественные фракции/отношения — поздняя фаза.
+ */
+export interface FactionData {
+  readonly id: string;
+  readonly name: string;
+}
+
+/**
+ * Запись профессии (`professions.json`, закон №10). `id` — абстрактная ссылка
+ * (worldgen присваивает сталкеру по id), `name` — читаемое имя. Влияние профессии
+ * на утилити-веса задач — забота TaskSelection (1.8); здесь лишь контент-запись.
+ */
+export interface ProfessionData {
+  readonly id: string;
+  readonly name: string;
+}
+
 /** Шаблон клички по черте характера (`names.json`). */
 export interface NicknamePattern {
   readonly trait: string;

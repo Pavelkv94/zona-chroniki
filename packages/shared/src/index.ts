@@ -31,6 +31,8 @@ export type {
   ItemKind,
   ItemData,
   SpeciesData,
+  FactionData,
+  ProfessionData,
   NicknamePattern,
   NamesData,
 } from './data';

@@ -1,0 +1,9 @@
+{
+  "professions": [
+    { "id": "stalker", "name": "Сталкер" },
+    { "id": "hunter", "name": "Охотник" },
+    { "id": "scavenger", "name": "Барахольщик" },
+    { "id": "medic", "name": "Санитар" },
+    { "id": "mechanic", "name": "Технарь" }
+  ]
+}

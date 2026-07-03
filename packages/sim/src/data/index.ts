@@ -32,6 +32,8 @@ import type {
   ItemData,
   ItemKind,
   SpeciesData,
+  FactionData,
+  ProfessionData,
   NamesData,
 } from '@zona/shared';
 
@@ -39,6 +41,8 @@ import mapRaw from './map.json';
 import itemsRaw from './items.json';
 import speciesRaw from './species.json';
 import namesRaw from './names.json';
+import factionsRaw from './factions.json';
+import professionsRaw from './professions.json';
 
 /** Ошибка валидации/связности контента. Бросается при загрузке модуля. */
 export class DataError extends Error {
@@ -171,6 +175,29 @@ function validateSpecies(data: unknown): readonly SpeciesData[] {
   return species;
 }
 
+// ── Валидация фракций и профессий (контент, закон №10) ───────────────────────
+
+/**
+ * Валидирует записи `{id, name}` с непустыми уникальными id и непустым name.
+ * Общая форма для factions.json и professions.json (обе — плоские списки
+ * абстрактных id → читаемое имя). `label` — для сообщений об ошибке.
+ */
+function validateIdNameList(data: unknown, key: string, label: string): readonly FactionData[] {
+  assert(data !== null && typeof data === 'object', `${label}.json: не объект`);
+  const arr = (data as Record<string, unknown>)[key];
+  assert(Array.isArray(arr), `${label}.json: ${key} должен быть массивом`);
+  const list = arr as FactionData[];
+  assert(list.length > 0, `${label}.json: список ${key} пуст`);
+  const ids = new Set<string>();
+  list.forEach((r, i) => {
+    assert(typeof r.id === 'string' && r.id.length > 0, `${label} #${i}: пустой id`);
+    assert(!ids.has(r.id), `${label} #${i}: дублирующийся id "${r.id}"`);
+    ids.add(r.id);
+    assert(typeof r.name === 'string' && r.name.length > 0, `${label} "${r.id}": пустое name`);
+  });
+  return list;
+}
+
 // ── Валидация имён ──────────────────────────────────────────────────────────
 
 /** Минимум имён/фамилий для приемлемого разнообразия NPC (закон №4). */
@@ -206,6 +233,16 @@ export const SPECIES: readonly SpeciesData[] = deepFreeze(validateSpecies(specie
 /** Валидированный и замороженный пул имён. */
 export const NAMES: NamesData = deepFreeze(validateNames(namesRaw));
 
+/** Валидированный и замороженный список фракций (контент, закон №10). */
+export const FACTIONS: readonly FactionData[] = deepFreeze(
+  validateIdNameList(factionsRaw, 'factions', 'factions'),
+);
+
+/** Валидированный и замороженный список профессий (контент, закон №10). */
+export const PROFESSIONS: readonly ProfessionData[] = deepFreeze(
+  validateIdNameList(professionsRaw, 'professions', 'professions') as readonly ProfessionData[],
+);
+
 // ── Индексы для O(1)/детерминированного доступа ──────────────────────────────
 
 /**
@@ -222,6 +259,14 @@ const EDGE_LEN = buildEdgeLenMap(MAP);
 
 /** id предмета → ItemData. */
 const ITEM_BY_ID: ReadonlyMap<string, ItemData> = new Map(ITEMS.map((it) => [it.id, it]));
+
+/** id фракции → FactionData. */
+const FACTION_BY_ID: ReadonlyMap<string, FactionData> = new Map(FACTIONS.map((f) => [f.id, f]));
+
+/** id профессии → ProfessionData. */
+const PROFESSION_BY_ID: ReadonlyMap<string, ProfessionData> = new Map(
+  PROFESSIONS.map((p) => [p.id, p]),
+);
 
 function buildAdjacency(map: MapData): LocationId[][] {
   const adj: LocationId[][] = map.locations.map(() => []);
@@ -282,6 +327,20 @@ export function getSpecies(id: number): SpeciesData {
   const s = SPECIES[id];
   assert(s !== undefined, `getSpecies: нет вида ${id}`);
   return s;
+}
+
+/** Фракция по строковому id. Бросает при неизвестном id (закон №10). */
+export function getFaction(id: string): FactionData {
+  const f = FACTION_BY_ID.get(id);
+  assert(f !== undefined, `getFaction: неизвестная фракция "${id}"`);
+  return f;
+}
+
+/** Профессия по строковому id. Бросает при неизвестном id (закон №10). */
+export function getProfession(id: string): ProfessionData {
+  const p = PROFESSION_BY_ID.get(id);
+  assert(p !== undefined, `getProfession: неизвестная профессия "${id}"`);
+  return p;
 }
 
 /**
