@@ -120,6 +120,12 @@ export const WEATHER_CODE: Readonly<Record<WeatherType, number>> = Object.freeze
 /**
  * Положение сущности на графе локаций. `dest === loc` ⇒ стоит на месте (без
  * sentinel, D-019); в пути `etaTicks` — сколько тиков-минут осталось до `dest`.
+ *
+ * ИНВАРИАНТ ИНИЦИАЛИЗАЦИИ: `addComponent` зануляет поля (D-024), поэтому у свежего
+ * носителя `loc = dest = 0`, что по контракту «без sentinel» читается как «стоит в
+ * локации 0» (ENTRY_LOCATION = Кордон, D-025), а НЕ «не инициализирован». Значение
+ * валидно только ПОСЛЕ того, как worldgen (1.3) выставит `loc`. Системы не должны
+ * читать Position у сущности до её инициализации worldgen.
  */
 export const Position: ComponentRef = defineComponentT(
   { loc: Types.ui32, dest: Types.ui32, etaTicks: Types.f32 },

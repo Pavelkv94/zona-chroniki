@@ -144,18 +144,21 @@ describe('round-trip КАЖДОГО компонента через ГЛОБАЛ
     const c = cols(ref);
     for (const [f, v] of Object.entries(values)) c[f]![e] = v;
 
+    // Захватываем ОКРУГЛЁННЫЙ до типа колонки эталон КАК ПРИМИТИВ (копия по значению)
+    // ДО сериализации — иначе сравнение с живым массивом было бы тавтологией.
+    const expected: Record<string, number> = {};
+    for (const f of Object.keys(values)) expected[f] = c[f]![e]!;
+
     const snap1 = serialize(w); // глобальный COMPONENT_REGISTRY
     const w2 = deserialize(snap1);
     const snap2 = serialize(w2);
     expect(hashSnapshot(snap2)).toBe(hashSnapshot(snap1));
     expect(hasComponent(w2.ecs, ref, e)).toBe(true);
-    // Значения восстановлены в (том же глобальном) массиве — deserialize их переписал.
-    // Сверяем с ОКРУГЛЁННЫМ до типа колонки эталоном (f32 округляет; ui8 — mod 256 и т.п.):
-    // именно это значение хранит SoA-массив и после round-trip, побитовость гарантирует хэш.
+    // Значение реально пережило round-trip: сверяем восстановленный массив с
+    // захваченным ранее примитивом (f32-округление/ui8-усечение уже учтены в expected).
     const c2 = cols(ref);
-    for (const [f, v] of Object.entries(values)) {
-      expect(c2[f]![e]).toBe(cols(ref)[f]![e]);
-      void v;
+    for (const f of Object.keys(values)) {
+      expect(c2[f]![e]).toBe(expected[f]);
     }
   }
 
