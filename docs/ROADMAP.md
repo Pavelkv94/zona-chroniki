@@ -58,7 +58,7 @@ DoD фазы: прогон 10 дней — 0 idle, NPC выживают охот
 | 1.3 | worldgen: 20 сталкеров (имена, инвентарь-источник), стада, расстановка от seed | 1.1,1.2 | behavior | ⬜ |
 | 1.4 | Movement (переход по графу, etaTicks, departed/arrived) | 1.1,1.2 | core | ✅ |
 | 1.5 | Needs (голод/жажда/усталость/страх, пороги, урон истощения) | 1.2 | behavior | ✅ |
-| 1.6 | Weather/DayNight (погода в WorldClock, isNight из tick) | 1.2 | core | ⬜ |
+| 1.6 | Weather/DayNight (погода в WorldClock, isNight из tick) | 1.2 | core | ✅ |
 | 1.7 | Perception (бакеты по loc + смежные, contacts, spotted) | 1.1,1.2 | core | ⬜ |
 | 1.8 | TaskSelection (utility argmax, idle запрещён, task/selected) | 1.4,1.5,1.7 | behavior | ⬜ |
 | 1.9 | Animals (стада, пастьба/бегство, причинное размножение) | 1.2,1.7 | ecosystem | ⬜ |

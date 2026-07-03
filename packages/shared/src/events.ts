@@ -22,6 +22,9 @@
  * `move/arrived` (сущность достигла соседней локации). Причинность (закон №6):
  * `move/departed.causedBy` → событие выбора задачи (`task/selected` из 1.8) или
  * `null`; `move/arrived.causedBy` → соответствующий `move/departed` этого шага.
+ * Задача 1.6 (система Weather) добавляет `weather/changed` (среда сменила погоду);
+ * `causedBy` → предыдущий `weather/changed` в логе (цепочка смен), `null` — первая
+ * смена в истории мира (корень цепочки погоды).
  *
  * Пример:
  * ```ts
@@ -82,6 +85,21 @@ export type SimEvent =
       type: 'move/arrived';
       /** `eid` достиг локации `at` (конец текущего шага маршрута). */
       payload: { readonly eid: EntityId; readonly at: LocationId };
+    })
+  | (SimEventBase & {
+      type: 'weather/changed';
+      /**
+       * Среда сменила погоду с `from` на `to` (задача 1.6, система Weather). Оба
+       * значения — КОДЫ погоды = индексы в `WEATHER_TYPES` (balance/weather), они
+       * же `WorldClock.weather` (`WEATHER_CODE`). Число, а не строка-литерал, чтобы
+       * `@zona/shared` не тянул перечень погод из `@zona/sim` (shared не зависит от
+       * sim) и не дублировал контент (закон №10) — сопоставление кода с именем
+       * делает потребитель (narrative) через `WEATHER_TYPES`. Погода — процедурная
+       * генерация СРЕДЫ (детерминирована от seed), а не «X% исхода у сущности»,
+       * поэтому `causedBy` ссылается на ПРЕДЫДУЩИЙ `weather/changed` (цепочка смен,
+       * D-005/закон №6), либо `null` для самой первой смены в истории мира.
+       */
+      payload: { readonly from: number; readonly to: number };
     })
   | (SimEventBase & {
       type: 'needs/threshold';
