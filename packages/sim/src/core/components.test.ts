@@ -83,10 +83,17 @@ describe('реестр наполнен и отсортирован (D-019, за
 
   it('поля данных-компонентов объявлены в фиксированном порядке; теги имеют fields:[]', () => {
     const byName = new Map(COMPONENT_REGISTRY.map((m) => [m.name, m] as const));
-    expect(byName.get('position')?.fields).toEqual(['loc', 'dest', 'etaTicks']);
+    // causality-поля (D-030, 1.2b) — в КОНЦЕ списков полей (append, закон №8).
+    expect(byName.get('position')?.fields).toEqual(['loc', 'dest', 'etaTicks', 'moveCause']);
     expect(byName.get('needs')?.fields).toEqual(['hunger', 'thirst', 'fatigue', 'fear']);
-    expect(byName.get('health')?.fields).toEqual(['hp']);
-    expect(byName.get('task')?.fields).toEqual(['kind', 'targetLoc', 'targetEid', 'startedTick']);
+    expect(byName.get('health')?.fields).toEqual(['hp', 'lethalCause']);
+    expect(byName.get('task')?.fields).toEqual([
+      'kind',
+      'targetLoc',
+      'targetEid',
+      'startedTick',
+      'causeEvent',
+    ]);
     expect(byName.get('skills')?.fields).toEqual(['shooting', 'survival', 'stealth']);
     expect(byName.get('home')?.fields).toEqual(['loc']);
     expect(byName.get('animal')?.fields).toEqual(['species', 'herd']);
@@ -312,10 +319,12 @@ describe('порядок полей в снапшоте = объявленный
       eids: number[];
       fields: Record<string, number[]>;
     };
-    expect(Object.keys(col.fields)).toEqual(['loc', 'dest', 'etaTicks']);
+    // moveCause (D-030, 1.2b) сериализуется В КОНЦЕ — не записан ⇒ 0 (D-024).
+    expect(Object.keys(col.fields)).toEqual(['loc', 'dest', 'etaTicks', 'moveCause']);
     expect(col.fields['loc']).toEqual([8]);
     expect(col.fields['dest']).toEqual([9]);
     expect(col.fields['etaTicks']).toEqual([3.5]);
+    expect(col.fields['moveCause']).toEqual([0]);
   });
 });
 

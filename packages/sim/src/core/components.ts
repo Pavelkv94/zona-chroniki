@@ -126,9 +126,16 @@ export const WEATHER_CODE: Readonly<Record<WeatherType, number>> = Object.freeze
  * локации 0» (ENTRY_LOCATION = Кордон, D-025), а НЕ «не инициализирован». Значение
  * валидно только ПОСЛЕ того, как worldgen (1.3) выставит `loc`. Системы не должны
  * читать Position у сущности до её инициализации worldgen.
+ *
+ * ПОЛЕ ПРИЧИННОСТИ (D-030, задача 1.2b): `moveCause` — EventId события `move/departed`,
+ * начавшего текущий переход (0 = «нет причины», D-031). Живёт ВЕСЬ переход и читается
+ * при прибытии, чтобы Movement (1.10) выставил `move/arrived.causedBy = moveCause`.
+ * ui32-код, штампуется через `stampCause` при смене состояния (D-032). Тип ui32:
+ * EventId помещается в Uint32 (guard >0xFFFFFFFF, D-031). Поле в КОНЦЕ схемы —
+ * append сохраняет порядок снапшота (закон №8).
  */
 export const Position: ComponentRef = defineComponentT(
-  { loc: Types.ui32, dest: Types.ui32, etaTicks: Types.f32 },
+  { loc: Types.ui32, dest: Types.ui32, etaTicks: Types.f32, moveCause: Types.ui32 },
   WORLD_CAPACITY,
 );
 
@@ -138,17 +145,40 @@ export const Needs: ComponentRef = defineComponentT(
   WORLD_CAPACITY,
 );
 
-/** Здоровье. `hp` — очки жизни (0 ⇒ смерть, переход в тег Corpse). */
-export const Health: ComponentRef = defineComponentT({ hp: Types.f32 }, WORLD_CAPACITY);
+/**
+ * Здоровье. `hp` — очки жизни (0 ⇒ смерть, переход в тег Corpse).
+ *
+ * ПОЛЕ ПРИЧИННОСТИ (D-030, задача 1.2b): `lethalCause` — EventId события, добившего
+ * `hp ≤ 0` (0 = «нет причины», D-031). Читается системой Death (1.11), чтобы выставить
+ * `entity/died.causedBy = lethalCause` — смерть наследует причину от урона/голода,
+ * добравшего носителя. ui32-код, штампуется через `stampCause` тем, кто наносит
+ * летальный урон (D-032). Поле в КОНЦЕ схемы (append, закон №8).
+ */
+export const Health: ComponentRef = defineComponentT(
+  { hp: Types.f32, lethalCause: Types.ui32 },
+  WORLD_CAPACITY,
+);
 
 /**
  * Текущая задача сущности (результат task-selection 1.8). `kind` — код `TaskKind`;
  * `targetLoc` — целевая локация (если задача про место), `targetEid` — целевая
  * сущность (жертва охоты/торговец, ссылка-eid без ремапа при load, D-011);
  * `startedTick` — тик начала (для тайм-аутов/прогресса).
+ *
+ * ПОЛЕ ПРИЧИННОСТИ (D-030, задача 1.2b): `causeEvent` — EventId события `task/selected`,
+ * выбравшего текущую задачу (0 = «нет причины», D-031). Читается системой Movement
+ * (1.10), чтобы порождённые задачей события (например `move/departed`) ссылались на
+ * причину: `causedBy = causeEvent`. ui32-код, штампуется через `stampCause` в
+ * task-selection (1.8) ПРИ СМЕНЕ задачи (D-032). Поле в КОНЦЕ схемы (append, закон №8).
  */
 export const Task: ComponentRef = defineComponentT(
-  { kind: Types.ui8, targetLoc: Types.ui32, targetEid: Types.eid, startedTick: Types.ui32 },
+  {
+    kind: Types.ui8,
+    targetLoc: Types.ui32,
+    targetEid: Types.eid,
+    startedTick: Types.ui32,
+    causeEvent: Types.ui32,
+  },
   WORLD_CAPACITY,
 );
 
@@ -202,12 +232,14 @@ export const DOMAIN_COMPONENTS: readonly ComponentMeta[] = [
   { name: 'alive', ref: Alive, fields: [] },
   { name: 'animal', ref: Animal, fields: ['species', 'herd'] },
   { name: 'corpse', ref: Corpse, fields: [] },
-  { name: 'health', ref: Health, fields: ['hp'] },
+  // causality-поля (D-030, 1.2b) добавлены В КОНЕЦ списков полей — append сохраняет
+  // порядок снапшота (закон №8): lethalCause/moveCause/causeEvent.
+  { name: 'health', ref: Health, fields: ['hp', 'lethalCause'] },
   { name: 'home', ref: Home, fields: ['loc'] },
   { name: 'human', ref: Human, fields: [] },
   { name: 'needs', ref: Needs, fields: ['hunger', 'thirst', 'fatigue', 'fear'] },
-  { name: 'position', ref: Position, fields: ['loc', 'dest', 'etaTicks'] },
+  { name: 'position', ref: Position, fields: ['loc', 'dest', 'etaTicks', 'moveCause'] },
   { name: 'skills', ref: Skills, fields: ['shooting', 'survival', 'stealth'] },
-  { name: 'task', ref: Task, fields: ['kind', 'targetLoc', 'targetEid', 'startedTick'] },
+  { name: 'task', ref: Task, fields: ['kind', 'targetLoc', 'targetEid', 'startedTick', 'causeEvent'] },
   { name: 'worldclock', ref: WorldClock, fields: ['weather', 'weatherSince'] },
 ] as const;

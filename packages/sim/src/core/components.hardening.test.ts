@@ -74,10 +74,11 @@ function coerce(type: Ft, v: number): number {
 // Ширины полей КАЖДОГО компонента (зеркало схем в components.ts). Держим здесь,
 // чтобы независимо посчитать «как это ляжет в SoA» и сверить с round-trip.
 const FIELD_TYPES: Record<string, Record<string, Ft>> = {
-  position: { loc: 'ui32', dest: 'ui32', etaTicks: 'f32' },
+  // causality-поля (D-030, 1.2b) — в КОНЦЕ, ui32 (moveCause/lethalCause/causeEvent).
+  position: { loc: 'ui32', dest: 'ui32', etaTicks: 'f32', moveCause: 'ui32' },
   needs: { hunger: 'f32', thirst: 'f32', fatigue: 'f32', fear: 'f32' },
-  health: { hp: 'f32' },
-  task: { kind: 'ui8', targetLoc: 'ui32', targetEid: 'eid', startedTick: 'ui32' },
+  health: { hp: 'f32', lethalCause: 'ui32' },
+  task: { kind: 'ui8', targetLoc: 'ui32', targetEid: 'eid', startedTick: 'ui32', causeEvent: 'ui32' },
   skills: { shooting: 'f32', survival: 'f32', stealth: 'f32' },
   home: { loc: 'ui32' },
   animal: { species: 'ui8', herd: 'ui32' },

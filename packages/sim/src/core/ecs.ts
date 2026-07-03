@@ -284,6 +284,66 @@ export function addComponent(world: EcsWorld, comp: ComponentRef, eid: EntityId)
   bitAddComponent(world, eid, comp);
 }
 
+// ── Штамп причинности (D-030/D-031, задача 1.2b) ─────────────────────────────
+//
+// Причинность в ядре кодируется по конвенции D-030: «id причины живёт в ui32-поле
+// состояния компонента» (Task.causeEvent, Position.moveCause, Health.lethalCause),
+// а не отдельным событием на каждую связь. Система, породившая событие, ШТАМПУЕТ его
+// EventId в соответствующее поле; система-читатель позже берёт его как `causedBy`
+// порождённого события (закон №6). `stampCause` — единственная санкционированная
+// запись такого поля: она инкапсулирует guard D-031 и запись в SoA-колонку.
+
+/** Верхняя граница EventId (D-031): id кодируется в ui32, 0 = «нет причины». */
+const EVENT_ID_MAX = 0xffffffff;
+
+/**
+ * Записывает EventId `id` в ui32-поле `field` компонента `comp` для сущности `eid`
+ * (конвенция причинности D-030). Guard (fail-fast, D-031): `id` обязан быть ЦЕЛЫМ
+ * в `[0, 0xFFFFFFFF]` — иначе throw. Тихое усечение ссылки причинности недопустимо:
+ * потерянный/искажённый EventId порвал бы цепочку `causedBy` (закон №6) молча.
+ * `id = 0` валиден и означает «нет причины» (совпадает с занулением addComponent,
+ * D-024). Границы `0` и `0xFFFFFFFF` — валидны.
+ *
+ * НЕ реэкспортируется из публичного `@zona/sim` (index.ts): это внутренний ecs-слой,
+ * системы (1.8 штампует, 1.10/1.11 читают) импортируют его из `core/ecs`.
+ *
+ * Пример (task-selection 1.8 при смене задачи, D-032):
+ * ```ts
+ * const ev = bus.publish({ type: 'task/selected', causedBy: needId, payload: {...} });
+ * stampCause(Task, 'causeEvent', eid, ev.id); // Movement (1.10) прочтёт causeEvent
+ * ```
+ */
+export function stampCause(
+  comp: ComponentRef,
+  field: string,
+  eid: EntityId,
+  id: number,
+): void {
+  if (!Number.isInteger(id) || id < 0 || id > EVENT_ID_MAX) {
+    throw new RangeError(
+      `stampCause: EventId=${String(id)} вне допустимого [0, ${EVENT_ID_MAX}] (поле ` +
+        `${field}, eid=${String(eid)}). Ссылка причинности не должна тихо усекаться (D-031).`,
+    );
+  }
+  const store = comp as unknown as Record<string, FieldArray | undefined>;
+  const column = store[field];
+  if (column === undefined) {
+    // Опечатка в имени поля — программерская ошибка; ловим рано, а не пишем в никуда.
+    throw new TypeError(
+      `stampCause: у компонента нет ui32-поля "${field}" (проверьте схему компонента).`,
+    );
+  }
+  // Симметрия с addComponent (D-031): запись по eid >= ёмкости в TypedArray — тихий
+  // no-op, что молча потеряло бы ссылку причинности. Падаем громко.
+  if (eid >= column.length) {
+    throw new RangeError(
+      `stampCause: eid=${String(eid)} вне ёмкости поля "${field}" (${column.length}). ` +
+        `Ссылка причинности не должна тихо теряться (D-031).`,
+    );
+  }
+  column[eid] = id;
+}
+
 /** Снимает компонент с сущности. Значения колонок НЕ обнуляет (перезапишутся при повторном add). */
 export function removeComponent(world: EcsWorld, comp: ComponentRef, eid: EntityId): void {
   bitRemoveComponent(world, eid, comp);
