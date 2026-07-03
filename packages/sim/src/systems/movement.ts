@@ -43,27 +43,26 @@
  * WorldClock/Needs и нарушили «идёт ровно edgeLen тиков». Их подключит тюнинг
  * позже через sim-architect.
  *
- * ── Причинность (закон №6, замкнутые цепочки) ────────────────────────────────
- * `move/arrived.causedBy` → последний `move/departed` этого eid в логе (departure
- * текущего шага). `move/departed.causedBy` зависит от того, ПЕРВЫЙ это хоп ноги
- * или промежуточный:
- *  • ПЕРВЫЙ хоп (нога только началась): причина — самый свежий committed
- *    `task/selected` этого eid, У КОТОРОГО `payload.targetLoc === текущему
- *    Task.targetLoc` (именно то событие 1.8, что задало эту цель). Матч по
- *    (eid И targetLoc) снимает риск прилипания СТАРОГО task/selected (иной цели).
- *    Нет такого — `null` (не прилепляем чужую цель).
- *  • ПРОМЕЖУТОЧНЫЙ хоп (departs, только что прибыв в промежуточный узел, цель
- *    дальше): причина — последний `move/arrived` этого eid (промежуточное
- *    прибытие). Так цепочка мультихопа замыкается без разрывов:
- *    `task/selected → dep1 → arr1 → dep2 → arr2 → …`.
- * Различение хопов: если самый свежий совпадающий `task/selected` НОВЕЕ последнего
- * `move/arrived` (или прибытий ещё не было) — это первый хоп новой ноги; иначе мы
- * departs после промежуточного прибытия → промежуточный хоп.
+ * ── Причинность через ШТАМПЫ (закон №6, D-030/D-032; ретрофит 1.8) ────────────
+ * БОЛЬШЕ НЕ сканируем лог (снят перф-хвост D-026: O(лог) filter на носителя за
+ * тик). Причина берётся O(1) из полей компонентов (конвенция D-030 «id причины в
+ * поле состояния»):
+ *  • `move/departed.causedBy` = `Task.causeEvent` носителя — это `task/selected`,
+ *    выбравший текущую задачу (штампует TaskSelection 1.8 при СМЕНЕ задачи, D-032).
+ *    `0` (нет причины) → `null`. Для КАЖДОГО хопа ноги причина departed — тот же
+ *    `task/selected` (задача не менялась ⇒ поле стабильно).
+ *  • При СТАРТЕ перехода id только что опубликованного `move/departed` штампуется
+ *    в `Position.moveCause` (`stampCause`), чтобы id причины дожил до прибытия.
+ *  • `move/arrived.causedBy` = `Position.moveCause` — id departed ЭТОГО шага
+ *    (снова O(1) из поля, `0` → `null`). Так цепочка каждого хопа замкнута:
+ *    `task/selected → move/departed → move/arrived`.
+ * Согласовано с docblock `Position.moveCause` (1.2b): поле хранит EventId
+ * `move/departed`, начавшего переход, и читается при прибытии. Резолв без лога:
+ * arrived.causedBy=departed.id, departed.causedBy=Task.causeEvent=task/selected.id.
  *
- * ТАЙМИНГ (финализируется при 1.8): контракт TaskSelection 1.8 — `task/selected`
- * должен быть ЗАКОММИЧЕН до тика departure. Сейчас Movement матчит по (eid,
- * targetLoc) из committed-лога, что робастно и без stale независимо от точного
- * тика публикации; точный тайминг/связь at(tick-1) закрепит 1.8.
+ * ПОРЯДОК В ТИКЕ (D-032): TaskSelection штампует `Task.causeEvent` РАНЬШЕ, чем
+ * Movement его читает (TaskSelection < Movement в расписании), иначе departed
+ * прочёл бы старую/нулевую причину.
  *
  * ── Инвариант цели (F-2, закон №4 — латентный idle) ──────────────────────────
  * Если `firstStep` не найден (targetLoc вне диапазона/недостижим), сущность стоит
@@ -76,87 +75,31 @@
  * там, где есть физиологический разброс; у движения его нет).
  */
 
-import type { EntityId, EventId, LocationId } from '@zona/shared';
+import type { EventId, LocationId } from '@zona/shared';
 import type { System, SystemCtx } from '../core/system';
-import type { EventBus } from '../core/events';
-import { queryEntities, hasComponent } from '../core/ecs';
+import { queryEntities, hasComponent, stampCause } from '../core/ecs';
 import { Position, Task } from '../core/components';
 import { MIN_TRAVEL_TICKS } from '../balance/movement';
 import { MAP_GRAPH, firstStep } from './pathfinding';
 
-/** Тип события выбора задачи (TaskSelection 1.8). Ещё не в union `SimEvent` —
- * ссылаемся по строке; поиск в логе идёт по этому дискриминанту (см. departure). */
-const TASK_SELECTED_TYPE = 'task/selected';
-
-/** Типизированные SoA-колонки `Position` (loc/dest — ui32, etaTicks — f32). */
+/** Типизированные SoA-колонки `Position` (loc/dest — ui32, etaTicks — f32,
+ * moveCause — ui32: id departed текущего перехода, читается при прибытии, D-030). */
 const POS = Position as unknown as {
   readonly loc: Uint32Array;
   readonly dest: Uint32Array;
   readonly etaTicks: Float32Array;
+  readonly moveCause: Uint32Array;
 };
-/** Типизированная колонка `Task.targetLoc` (ui32) — Movement читает только её. */
-const TASK = Task as unknown as { readonly targetLoc: Uint32Array };
+/** Типизированные колонки `Task`: `targetLoc` — цель движения, `causeEvent` —
+ * штамп причины (id `task/selected`, D-030), который Movement переносит в departed. */
+const TASK = Task as unknown as {
+  readonly targetLoc: Uint32Array;
+  readonly causeEvent: Uint32Array;
+};
 
-/**
- * Ищет id самого свежего committed `task/selected` этого `eid`, У КОТОРОГО
- * `payload.targetLoc === target`. Тип ещё не в union `SimEvent` — читаем
- * `type`/`payload` ослабленно. Матч по (eid И targetLoc) исключает прилипание
- * старого события с другой целью. Скан с конца → первое совпадение = самое свежее.
- * Нет — `null`.
- */
-function findMatchingTaskSelected(
-  bus: EventBus,
-  eid: EntityId,
-  target: number,
-): EventId | null {
-  const log = bus.log;
-  for (let i = log.length - 1; i >= 0; i--) {
-    const ev = log[i];
-    if (ev === undefined) continue;
-    // `ev.type` — string в шапке; сравнение с ещё-не-union литералом безопасно.
-    const type: string = ev.type;
-    if (type !== TASK_SELECTED_TYPE) continue;
-    const payload = ev.payload as unknown as { readonly eid?: number; readonly targetLoc?: number };
-    if (payload.eid === eid && payload.targetLoc === target) return ev.id;
-  }
-  return null;
-}
-
-/**
- * Ищет id ПОСЛЕДНЕГО события типа `type` для сущности `eid` в append-only логе.
- * Скан с конца → первое совпадение = самое свежее (максимальный id). Используется
- * для `move/departed` (причина прибытия — departure текущего шага) и `move/arrived`
- * (промежуточное прибытие — причина следующего departure). Нет — `null`.
- */
-function findLastMoveEvent(
-  bus: EventBus,
-  eid: EntityId,
-  type: 'move/departed' | 'move/arrived',
-): EventId | null {
-  const log = bus.log;
-  for (let i = log.length - 1; i >= 0; i--) {
-    const ev = log[i];
-    if (ev === undefined) continue;
-    if (ev.type === type && ev.payload.eid === eid) return ev.id;
-  }
-  return null;
-}
-
-/**
- * Причина события `move/departed` для `eid`, идущего к `target` (закон №6).
- * Различает первый хоп ноги (причина — совпадающий `task/selected`) и
- * промежуточный (причина — последнее `move/arrived`), см. docblock модуля.
- */
-function departureCause(bus: EventBus, eid: EntityId, target: number): EventId | null {
-  const selId = findMatchingTaskSelected(bus, eid, target);
-  const arrId = findLastMoveEvent(bus, eid, 'move/arrived');
-  // Совпадающий task/selected новее последнего прибытия (или прибытий не было) ⇒
-  // это ПЕРВЫЙ хоп ноги, начатой этим task/selected → его и указываем причиной.
-  if (selId !== null && (arrId === null || selId > arrId)) return selId;
-  // Иначе departs после промежуточного прибытия → цепляем цепочку к нему.
-  if (arrId !== null) return arrId;
-  // Ни цели-события, ни прошлых прибытий (departure из истока без task/selected).
-  return null;
+/** ui32-поле причины (0 = «нет причины», D-031) → `EventId | null` для `causedBy`. */
+function causeOrNull(id: number): EventId | null {
+  return id === 0 ? null : (id as EventId);
 }
 
 /**
@@ -188,16 +131,20 @@ export const Movement: System = {
         POS.dest[eid] = step;
         POS.etaTicks[eid] = eta;
 
-        const cause = departureCause(bus, eid, target);
-        bus.publish({
+        // Причина departed — штамп задачи (Task.causeEvent = id task/selected, D-030),
+        // прочитанный O(1) из компонента, без скана лога.
+        const id = bus.publish({
           type: 'move/departed',
-          causedBy: cause,
+          causedBy: causeOrNull(TASK.causeEvent[eid] as number),
           payload: {
             eid,
             from: loc as LocationId,
             to: step as LocationId,
           },
         });
+        // Переносим id departed в Position.moveCause — доживёт до прибытия и станет
+        // причиной arrived (D-030); stampCause даёт guard диапазона EventId (D-031).
+        stampCause(Position, 'moveCause', eid, id);
       } else {
         // ── В ПУТИ ── списываем тик; при исчерпании — прибытие.
         const eta = (POS.etaTicks[eid] as number) - 1;
@@ -205,10 +152,10 @@ export const Movement: System = {
         if (eta > 0) continue;
 
         POS.loc[eid] = dest; // прибыл (loc === dest ⇒ снова «стоит»)
-        const cause = findLastMoveEvent(bus, eid, 'move/departed');
+        // Причина arrived — id departed этого шага из Position.moveCause (O(1), D-030).
         bus.publish({
           type: 'move/arrived',
-          causedBy: cause,
+          causedBy: causeOrNull(POS.moveCause[eid] as number),
           payload: {
             eid,
             at: dest as LocationId,

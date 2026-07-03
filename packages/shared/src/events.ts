@@ -114,6 +114,28 @@ export type SimEvent =
       payload: { readonly eid: EntityId; readonly need: NeedKind; readonly level: NeedLevel };
     })
   | (SimEventBase & {
+      type: 'task/selected';
+      /**
+       * NPC `eid` ВЫБРАЛ новую задачу `kind` (код `TaskKind`: SLEEP/EAT/DRINK/
+       * FORAGE/HUNT/REST/FLEE — число, чтобы `@zona/shared` не тянул перечень из
+       * `@zona/sim`, закон №10). Публикуется системой TaskSelection (1.8, D-020)
+       * РОВНО при СМЕНЕ задачи (пока состояние ведёт к той же задаче — молчит,
+       * D-032), НЕ каждый тик. `targetLoc` — целевая локация задачи (у on-the-spot
+       * задач = текущая loc), `targetEid` — целевая сущность (жертва охоты; опущен,
+       * если задача бесцелевая). `causedBy: null` — выбор задачи корневой
+       * (физиологический драйв из нужд/обстановки, закон №2: не «X% шанс», а argmax
+       * по состоянию). Нисходящие системы читают причину задачи через
+       * `Task.causeEvent` (штамп этого id, D-030), а не сканом лога: Movement (1.4)
+       * ставит `move/departed.causedBy = Task.causeEvent`.
+       */
+      payload: {
+        readonly eid: EntityId;
+        readonly kind: number;
+        readonly targetLoc?: LocationId;
+        readonly targetEid?: EntityId;
+      };
+    })
+  | (SimEventBase & {
       type: 'perception/spotted';
       /**
        * `observer` ВПЕРВЫЕ заметил `target` в локации `loc` (задача 1.7, система

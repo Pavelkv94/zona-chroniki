@@ -26,9 +26,16 @@ graph TD
   Movement --> BAL
   Movement --> EV
   PF --> DATA
-  TS18["TaskSelection 1.8<br/>(ставит Task, шлёт task/selected)"] -. пишет Task/шину .-> TASK
-  BUS -. causedBy .-> Movement
+  TS18["TaskSelection 1.8<br/>(ставит Task, штампует Task.causeEvent)"] -. пишет Task.causeEvent .-> TASK
+  TASK -. causedBy departed = Task.causeEvent .-> Movement
+  POS -. causedBy arrived = Position.moveCause .-> Movement
 ```
+
+Причинность (D-030/D-033, ретрофит 1.8): скан лога (`bus.log.slice()`+filter) УДАЛЁН.
+`move/departed.causedBy` читается за O(1) из штампа `Task.causeEvent` (проставлен
+TaskSelection в том же тике — производитель РАНЬШЕ потребителя, D-032). Id departed
+штампуется в `Position.moveCause` и доживает до прибытия → `move/arrived.causedBy`.
+Цепочка: `task/selected → move/departed → move/arrived` замыкается на каждом хопе.
 
 ## Модель транзита (одна ветка на тик)
 
@@ -37,11 +44,11 @@ flowchart TD
   start{"dest === loc ?"}
   start -- "да (стоит)" --> hasTask{"есть Task и<br/>targetLoc ≠ loc ?"}
   hasTask -- нет --> idle["стоит: событий нет"]
-  hasTask -- да --> depart["dest = firstStep(loc→target)<br/>etaTicks = max(MIN_TRAVEL_TICKS, edgeLen)<br/>publish move/departed<br/>causedBy: первый хоп → task/selected(eid,targetLoc) | null;<br/>промежуточный хоп → последний move/arrived этого eid"]
+  hasTask -- да --> depart["dest = firstStep(loc→target)<br/>etaTicks = max(MIN_TRAVEL_TICKS, edgeLen)<br/>publish move/departed<br/>causedBy = Task.causeEvent (штамп TaskSelection 1.8, O(1), D-030/D-033)<br/>затем Position.moveCause := id этого move/departed"]
   start -- "нет (в пути)" --> dec["etaTicks -= 1"]
   dec --> chk{"etaTicks ≤ 0 ?"}
   chk -- нет --> transit["продолжает путь"]
-  chk -- да --> arrive["loc = dest (прибыл)<br/>publish move/arrived<br/>causedBy = последний move/departed этого eid"]
+  chk -- да --> arrive["loc = dest (прибыл)<br/>publish move/arrived<br/>causedBy = Position.moveCause (= id move/departed, O(1), D-033)"]
   arrive --> multihop["loc = dest ⇒ снова «стоит»;<br/>следующий тик — departure к след. шагу"]
 ```
 
