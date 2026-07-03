@@ -62,7 +62,7 @@ DoD фазы: прогон 10 дней — 0 idle, NPC выживают охот
 | 1.6 | Weather/DayNight (погода в WorldClock, isNight из tick) | 1.2 | core | ✅ |
 | 1.7 | Perception (бакеты по loc + смежные, contacts, spotted) | 1.1,1.2 | core | ✅ |
 | 1.8 | TaskSelection (utility argmax, idle запрещён, task/selected) | 1.4,1.5,1.7 | behavior | ✅ |
-| 1.8e | TaskEffects: восстановление нужд (EAT/DRINK/SLEEP/REST/FORAGE) + расход еды (закон №3) | 1.8 | behavior | 🟡 |
+| 1.8e | TaskEffects: восстановление нужд (EAT/DRINK/SLEEP/REST/FORAGE) + расход еды (закон №3) | 1.8 | behavior | ✅ |
 | 1.9 | Animals (стада, пастьба/бегство, причинное размножение) | 1.2,1.7 | ecosystem | ⬜ |
 | 1.10 | Encounter Resolver v1 + Encounters (охота человек-vs-животное, единый интерфейс) | 1.7,1.8 | behavior | ⬜ |
 | 1.11 | Death/Corpse (труп с инвентарём, entity/died с causedBy) | 1.10,1.5 | core | ⬜ |
