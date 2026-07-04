@@ -87,3 +87,8 @@ export type { SimEvent } from '@zona/shared';
 // НЕ входит в registerPhase1Systems (подключит 2.16) — экспортируется как System,
 // чтобы её можно было прогнать в отдельном планировщике (headless-инвариант 2.3).
 export { Economy } from './systems/economy';
+
+// Хелпер найма assignJobs (2.4): назначает Job резидентам поселений с оседлой
+// профессией. НЕ система и НЕ в конвейере/worldgen (вызовет FactionAI/2.16) —
+// экспортируется как чистая функция, чтобы интеграция Фазы 2 включила наём.
+export { assignJobs } from './systems/job-assign';

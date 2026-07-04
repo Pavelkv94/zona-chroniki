@@ -9,9 +9,9 @@
  *
  * ── Что читает (только воспринятое/своё, закон №6) ───────────────────────────
  * Position.loc, Needs (hunger/thirst/fatigue/fear), Home.loc, Skills.survival,
- * инвентарь (ResourceStore 'inventory') и СТАТИЧЕСКИЕ свойства локаций из data
- * (water/game/forage/danger). Живые животные (носители Animal+Alive) — как цели
- * охоты. TaskSelection НЕ читает глобальное состояние мира в обход восприятия и НЕ
+ * Job.workplace (носитель Job — трудоустроен, задача 2.4), инвентарь (ResourceStore
+ * 'inventory') и СТАТИЧЕСКИЕ свойства локаций из data (water/game/forage/danger).
+ * Живые животные (носители Animal+Alive) — как цели охоты. TaskSelection НЕ читает глобальное состояние мира в обход восприятия и НЕ
  * зовёт другие системы напрямую: общение — через компоненты и шину (закон №6).
  * Угроза влияет на выбор ЧЕРЕЗ `Needs.fear` (его поднимает Perception 1.7 от
  * co-located угрозы) — поэтому отдельного чтения `contacts` здесь нет: страх уже
@@ -27,8 +27,14 @@
  *   FLEE   = W.fleeFear·fear
  *   FORAGE = FALLBACK_SCORE_FLOOR + W.forageBase·forageAbund   (fallback, всегда >0)
  *   REST   = W.restBase + W.fatigue·fatigue·REST_FATIGUE_FACTOR (fallback, всегда >0)
+ *   WORK   = W.work·safety·max(0, 1−maxNeed)   (ТОЛЬКО носитель Job И день, задача 2.4)
  * EAT без еды и HUNT без достижимой дичи ИСКЛЮЧАЮТСЯ из argmax (−∞): нельзя есть
- * то, чего нет (закон №3), и нельзя охотиться там, где дичи нет. Два fallback'а
+ * то, чего нет (закон №3), и нельзя охотиться там, где дичи нет. WORK ИСКЛЮЧЁН (−∞)
+ * у безработных (нет Job) и ночью (работник спит, а не выходит на смену) — поведение
+ * не-Job NPC не меняется. `maxNeed` = самая высокая нужда: любая критическая нужда/
+ * страх гасит WORK к нулю и пропускает вперёд EAT/DRINK/SLEEP/HUNT/FLEE (сначала
+ * выжить, потом смена); спокойный сытый работник днём выбирает WORK НАД fallback'ами
+ * (эмерджентный «рабочий день» БЕЗ явного расписания — закон №1/№2). Два fallback'а
  * (FORAGE/REST) СТРОГО положительны, поэтому argmax НИКОГДА не пуст — idle
  * невозможен (закон №4, D-020).
  *
@@ -41,7 +47,7 @@
  *
  * ── Детерминированный argmax (закон №8, D-020) ───────────────────────────────
  * Выбор — задача с наибольшей оценкой. При РАВЕНСТВЕ — МЕНЬШИЙ код TaskKind
- * (порядок enum: SLEEP<EAT<DRINK<FORAGE<HUNT<REST<FLEE), а НЕ rng-tie-break:
+ * (порядок enum: SLEEP<EAT<DRINK<FORAGE<HUNT<REST<FLEE<WORK), а НЕ rng-tie-break:
  * кандидаты обходятся в порядке возрастания кода со строгим `>`, поэтому первый
  * достигший максимума (меньший код) удерживает выбор. rng в решении НЕ участвует
  * (закон №2: случайность — только физиология, здесь её нет).
@@ -53,7 +59,8 @@
  *   SLEEP          → target = Home.loc (дом; если уже дома — на месте);
  *   DRINK          → ближайшая loc с водой по edgeLen (текущая, если с водой);
  *   HUNT           → ближайшая loc с живой дичью; targetEid = min-eid особь в ней;
- *   FLEE           → соседняя loc с наименьшим danger (tie — min id).
+ *   FLEE           → соседняя loc с наименьшим danger (tie — min id);
+ *   WORK           → Job.workplace (рабочее место; если уже там — на месте).
  * Ближайшая loc считается детерминированным Дейкстрой (pathfinding), tie по
  * стоимости — меньший id локации.
  *
@@ -73,7 +80,7 @@
 import type { EntityId, LocationId } from '@zona/shared';
 import type { System, SystemCtx } from '../core/system';
 import { queryEntities, hasComponent, addComponent, stampCause } from '../core/ecs';
-import { Position, Needs, Task, Skills, Home, Animal, Human, Alive, TaskKind } from '../core/components';
+import { Position, Needs, Task, Skills, Home, Animal, Human, Alive, Job, TaskKind } from '../core/components';
 import { MAP, getLocation, getItem, neighbors } from '../data/index';
 import { MAP_GRAPH, shortestPath } from './pathfinding';
 import { NEED_MAX } from '../balance/needs';
@@ -99,6 +106,7 @@ const NEED = Needs as unknown as {
 };
 const SKILL = Skills as unknown as { readonly survival: Float32Array };
 const HOME = Home as unknown as { readonly loc: Uint32Array };
+const JOB = Job as unknown as { readonly workplace: Uint32Array };
 const TSK = Task as unknown as {
   kind: Uint8Array;
   targetLoc: Uint32Array;
@@ -240,6 +248,11 @@ export const TaskSelection: System = {
       const drinkLoc = waterHere ? (loc as LocationId) : (nearestLoc(loc, WATER_LOCS) ?? (loc as LocationId));
       const fleeLoc = safestNeighbor(loc);
       const gameAbund = hunt !== null ? getLocation(hunt.loc).game : 0;
+      // Трудоустройство (задача 2.4): носительство Job = «работает на поселение».
+      // У безработных Job нет ⇒ WORK недоступен (score −∞), поведение не-Job NPC не
+      // меняется. workplace — loc рабочего места (цель WORK); задан только при hasJob.
+      const hasJob = hasComponent(ecs, Job, eid);
+      const workplace = hasJob ? (JOB.workplace[eid] as LocationId) : (loc as LocationId);
 
       // ── Оценки (веса из balance/utility, закон №7) ─────────────────────────
       const sSleep = W.fatigue * fatigue + (night ? W.night : 0) + safety * W.safe;
@@ -258,6 +271,12 @@ export const TaskSelection: System = {
       const sFlee = W.fleeFear * fear;
       const sForage = FALLBACK_SCORE_FLOOR + W.forageBase * locData.forage;
       const sRest = W.restBase + W.fatigue * fatigue * REST_FATIGUE_FACTOR;
+      // WORK (задача 2.4): ТОЛЬКО носитель Job и ТОЛЬКО днём. `needCalm` = 1−самая
+      // высокая нужда (clamp ≥0): любая критическая нужда/страх гасит WORK к нулю и
+      // пропускает вперёд EAT/DRINK/SLEEP/HUNT/FLEE (сначала выжить, потом смена).
+      // Ночью и у безработных WORK исключён из argmax (−∞), как EAT без еды.
+      const needCalm = Math.max(0, 1 - Math.max(hunger, thirst, fatigue, fear));
+      const sWork = hasJob && !night ? W.work * safety * needCalm : -Infinity;
 
       // ── argmax по возрастанию кода TaskKind + строгое `>` ⇒ tie → меньший код
       // (D-020, НЕ rng). Порядок массива ОБЯЗАН быть по возрастанию кода.
@@ -269,6 +288,7 @@ export const TaskSelection: System = {
         [TaskKind.HUNT, sHunt],
         [TaskKind.REST, sRest],
         [TaskKind.FLEE, sFlee],
+        [TaskKind.WORK, sWork],
       ];
       let kind: TaskKind = TaskKind.FORAGE;
       let best = -Infinity;
@@ -296,6 +316,11 @@ export const TaskSelection: System = {
           break;
         case TaskKind.FLEE:
           targetLoc = fleeLoc;
+          break;
+        case TaskKind.WORK:
+          // hasJob гарантировано: иначе sWork=−∞ и WORK не выбран. Цель — рабочее
+          // место (Job.workplace); уже на месте ⇒ targetLoc==loc (Movement no-op).
+          targetLoc = workplace;
           break;
         // EAT/FORAGE/REST — на месте (target = loc, уже проставлено).
         default:

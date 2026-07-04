@@ -201,6 +201,26 @@ function validateIdNameList(data: unknown, key: string, label: string): readonly
   return list;
 }
 
+/**
+ * Валидирует `professions.json` (Фаза 2, задача 2.4). Поверх общей проверки
+ * `{id, name}` (validateIdNameList) требует у КАЖДОЙ профессии поле `workTasks` —
+ * массив непустых строк-id рабочих задач (может быть ПУСТЫМ: `[]` = «полевая»
+ * профессия без рабочего места в поселении). Непустой список = профессия оседлая
+ * (её резидент поселения трудоустраивается через assignJobs, WORK-утилити 2.4). Код
+ * оперирует абстрактными id задач, не их семантикой (закон №10).
+ */
+function validateProfessions(data: unknown): readonly ProfessionData[] {
+  const base = validateIdNameList(data, 'professions', 'professions');
+  base.forEach((r) => {
+    const wt = (r as unknown as { workTasks?: unknown }).workTasks;
+    assert(Array.isArray(wt), `профессия "${r.id}": workTasks должен быть массивом (возможно пустым)`);
+    (wt as unknown[]).forEach((t, j) =>
+      assert(typeof t === 'string' && (t as string).length > 0, `профессия "${r.id}" workTasks #${j}: пустой id задачи`),
+    );
+  });
+  return base as readonly ProfessionData[];
+}
+
 // ── Валидация матрицы отношений фракций (закон №10) ──────────────────────────
 
 /** Границы шкалы отношений (D-046 контекст: −100 враг … +100 союзник). */
@@ -351,7 +371,7 @@ export const FACTIONS: readonly FactionData[] = deepFreeze(
 
 /** Валидированный и замороженный список профессий (контент, закон №10). */
 export const PROFESSIONS: readonly ProfessionData[] = deepFreeze(
-  validateIdNameList(professionsRaw, 'professions', 'professions') as readonly ProfessionData[],
+  validateProfessions(professionsRaw),
 );
 
 /**

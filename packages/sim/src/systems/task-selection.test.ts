@@ -19,16 +19,16 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import type { EntityId, Seed, SimEvent, Tick } from '@zona/shared';
+import type { EntityId, LocationId, Seed, SimEvent, Tick } from '@zona/shared';
 import { createSimWorld, type SimWorld } from '../core/world';
 import { spawnEntity, addComponent, removeComponent, hasComponent, queryEntities } from '../core/ecs';
-import { Position, Needs, Health, Skills, Home, Animal, Human, Alive, Task, TaskKind } from '../core/components';
+import { Position, Needs, Health, Skills, Home, Animal, Human, Alive, Job, Task, TaskKind } from '../core/components';
 import { createScheduler, type Scheduler } from '../core/scheduler';
 import { serialize, deserialize, hashSnapshot } from '../core/snapshot';
 import { HEALTH_MAX } from '../balance/needs';
 import { worldgen } from '../worldgen';
 import { STALKER_COUNT } from '../balance/worldgen';
-import { getSettlements } from '../data/index';
+import { getSettlements, neighbors } from '../data/index';
 import { Needs as NeedsSystem } from './needs';
 import { Perception } from './perception';
 import { Movement } from './movement';
@@ -39,6 +39,7 @@ const POS = Position as unknown as { loc: Uint32Array; dest: Uint32Array; etaTic
 const NEED = Needs as unknown as { hunger: Float32Array; thirst: Float32Array; fatigue: Float32Array; fear: Float32Array };
 const SKILL = Skills as unknown as { survival: Float32Array; shooting: Float32Array; stealth: Float32Array };
 const HOME = Home as unknown as { loc: Uint32Array };
+const JOB = Job as unknown as { workplace: Uint32Array; employer: Uint32Array };
 const HP = Health as unknown as { hp: Float32Array };
 const ANIM = Animal as unknown as { species: Uint8Array; herd: Uint32Array };
 const TSK = Task as unknown as {
@@ -800,5 +801,352 @@ describe('детерминизм: мини-прогон всего конвей�
     const b = run(333);
     expect(a.hash).toBe(b.hash);
     expect(a.log).toEqual(b.log);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WORK (задача 2.4): носитель Job днём при спокойных нуждах → WORK; нужды/страх/
+// ночь перебивают; безработный НЕ получает WORK (поведение не-Job не меняется).
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Селит сталкера И навешивает Job(workplace, employer=фиктивный eid). */
+function placeWorker(world: SimWorld, o: StalkerOpts & { workplace: number }): EntityId {
+  const eid = placeStalker(world, o);
+  addComponent(world.ecs, Job, eid);
+  JOB.workplace[eid] = o.workplace;
+  JOB.employer[eid] = 1; // фиктивный работодатель (WORK-выбор его не читает)
+  return eid;
+}
+
+describe('WORK: носитель Job днём при спокойных нуждах выходит на смену', () => {
+  it('спокойный работник днём на рабочем месте (loc0) → WORK, target=workplace (на месте)', () => {
+    const w = createSimWorld(300 as Seed);
+    // Кордон (loc0): безопасно, спокоен ⇒ WORK бьёт fallback'и/дневной SLEEP.
+    const eid = placeWorker(w, { loc: 0, home: 0, workplace: 0 });
+    evalAt(w, DAY_TICK);
+    expect(TSK.kind[eid]).toBe(TaskKind.WORK);
+    expect(TSK.targetLoc[eid]).toBe(0); // рабочее место = текущая loc
+  });
+
+  it('работник вне рабочего места (в Баре loc5, workplace=0) → WORK target=0; Movement довозит', () => {
+    const w = createSimWorld(301 as Seed);
+    const eid = placeWorker(w, { loc: 5, home: 5, workplace: 0 });
+    const s = createScheduler();
+    s.register(TaskSelection); // ДО Movement (D-032)
+    s.register(Movement);
+    // Держим день весь путь 5→2→1→0 (нужды не растим — Needs-система не в конвейере).
+    for (let t = 0; t < 140; t++) {
+      w.tick = (DAY_TICK + t) as Tick;
+      s.tickOnce(w);
+    }
+    expect(TSK.kind[eid]).toBe(TaskKind.WORK);
+    expect(TSK.targetLoc[eid]).toBe(0);
+    expect(POS.loc[eid]).toBe(0); // Movement довёз до рабочего места
+    // Штамп причинности проставлен (task/selected → causeEvent), как у прочих задач.
+    const sel = taskEvents(w, eid);
+    expect(sel.length).toBeGreaterThanOrEqual(1);
+    expect(TSK.causeEvent[eid]).toBe(sel[sel.length - 1]!.id);
+  });
+
+  it('на первом выборе WORK публикует task/selected и штампует Task.causeEvent', () => {
+    const w = createSimWorld(302 as Seed);
+    const eid = placeWorker(w, { loc: 0, home: 0, workplace: 0 });
+    evalAt(w, DAY_TICK);
+    const evs = taskEvents(w, eid);
+    expect(evs).toHaveLength(1);
+    expect((evs[0]!.payload as { kind: number }).kind).toBe(TaskKind.WORK);
+    expect(TSK.causeEvent[eid]).toBe(evs[0]!.id);
+  });
+});
+
+describe('WORK: нужды/страх/ночь перебивают смену (рационально)', () => {
+  it('ГОЛОДНЫЙ работник с едой → EAT, не WORK (сначала поесть)', () => {
+    const w = createSimWorld(310 as Seed);
+    const eid = placeWorker(w, { loc: 0, home: 0, workplace: 0, hunger: 85, food: true });
+    evalAt(w, DAY_TICK);
+    expect(TSK.kind[eid]).toBe(TaskKind.EAT);
+  });
+
+  it('работник В ОПАСНОСТИ (высокий страх) → FLEE, не WORK', () => {
+    const w = createSimWorld(311 as Seed);
+    const eid = placeWorker(w, { loc: 0, home: 0, workplace: 0, fear: 100 });
+    evalAt(w, DAY_TICK);
+    expect(TSK.kind[eid]).toBe(TaskKind.FLEE);
+  });
+
+  it('НОЧЬЮ работник спит, а не выходит на смену (WORK исключён из argmax)', () => {
+    const w = createSimWorld(312 as Seed);
+    const eid = placeWorker(w, { loc: 0, home: 0, workplace: 0 });
+    evalAt(w, NIGHT_TICK);
+    expect(TSK.kind[eid]).not.toBe(TaskKind.WORK);
+    expect(TSK.kind[eid]).toBe(TaskKind.SLEEP); // спокоен ночью дома ⇒ сон
+  });
+});
+
+describe('WORK недоступен без Job: поведение не-Job NPC не меняется (закон против регресса 2.4)', () => {
+  it('тот же спокойный сталкер на loc0 БЕЗ Job → НЕ WORK (Job навешен ⇒ WORK)', () => {
+    // Без Job: WORK исключён (−∞) ⇒ выбор из до-2.4 набора (fallback/DRINK/SLEEP).
+    const wNo = createSimWorld(320 as Seed);
+    const bare = placeStalker(wNo, { loc: 0, home: 0 });
+    evalAt(wNo, DAY_TICK);
+    const kindNoJob = TSK.kind[bare] as number;
+    expect(kindNoJob).not.toBe(TaskKind.WORK);
+
+    // С Job: РОВНО тот же старт → WORK. Значит дельта 2.4 замкнута на носителях Job.
+    const wJob = createSimWorld(320 as Seed);
+    const worker = placeWorker(wJob, { loc: 0, home: 0, workplace: 0 });
+    evalAt(wJob, DAY_TICK);
+    expect(TSK.kind[worker]).toBe(TaskKind.WORK);
+  });
+
+  it('мир БЕЗ единого Job: полный worldgen-прогон не порождает ни одной WORK-задачи', () => {
+    const w = createSimWorld(321 as Seed);
+    worldgen(w);
+    const s = createScheduler();
+    s.register(NeedsSystem);
+    s.register(TaskSelection);
+    s.run(w, 300);
+    for (const eid of queryEntities(w.ecs, [Human, Alive])) {
+      expect(TSK.kind[eid]).not.toBe(TaskKind.WORK); // worldgen не навешивает Job
+    }
+  });
+});
+
+describe('WORK: детерминизм 2× и resume (Job + Task сериализуются)', () => {
+  /** Мир с работником в Баре (workplace=Кордон) — WORK ведёт Movement мультихоп. */
+  function buildWorkWorld(seed: number): SimWorld {
+    const w = createSimWorld(seed as Seed);
+    placeWorker(w, { loc: 5, home: 5, workplace: 0 });
+    placeWorker(w, { loc: 0, home: 0, workplace: 0 }); // уже на месте
+    placeStalker(w, { loc: 3, hunger: 90, survival: 0.6 }); // не-Job контроль
+    return w;
+  }
+  function schedulerNT(): Scheduler {
+    const s = createScheduler();
+    s.register(NeedsSystem);
+    s.register(TaskSelection);
+    s.register(Movement);
+    return s;
+  }
+
+  it('два прогона одного seed → идентичный хэш и лог task/selected', () => {
+    function run(seed: number): { hash: string; log: unknown[] } {
+      const w = buildWorkWorld(seed);
+      const s = schedulerNT();
+      for (let t = 0; t < 120; t++) {
+        w.tick = (DAY_TICK + t) as Tick;
+        s.tickOnce(w);
+      }
+      const log = w.bus.log
+        .filter((e) => e.type === 'task/selected')
+        .map((e) => ({ id: e.id, causedBy: e.causedBy, payload: e.payload }));
+      return { hash: hashSnapshot(serialize(w)), log };
+    }
+    const a = run(330);
+    const b = run(330);
+    expect(a.hash).toBe(b.hash);
+    expect(a.log).toEqual(b.log);
+  });
+
+  it('resume: непрерывный === split через save/load (Job+Task в снапшоте)', () => {
+    const cont = buildWorkWorld(331);
+    const contSched = schedulerNT();
+    for (let t = 0; t < 120; t++) {
+      cont.tick = (DAY_TICK + t) as Tick;
+      contSched.tickOnce(cont);
+    }
+
+    const split = buildWorkWorld(331);
+    const splitSched = schedulerNT();
+    for (let t = 0; t < 60; t++) {
+      split.tick = (DAY_TICK + t) as Tick;
+      splitSched.tickOnce(split);
+    }
+    const restored = deserialize(serialize(split));
+    const restoredSched = schedulerNT();
+    for (let t = 60; t < 120; t++) {
+      restored.tick = (DAY_TICK + t) as Tick;
+      restoredSched.tickOnce(restored);
+    }
+    expect(hashSnapshot(serialize(restored))).toBe(hashSnapshot(serialize(cont)));
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// WORK ТАЙ-БРЕЙК ПО КОДУ (D-020): WORK=7 — ПОСЛЕДНИЙ код; на ТОЧНОМ равенстве
+// проигрывает ЛЮБОЙ задаче 0..6. Фиксируем знаковый порядок: работа не «залипает».
+// ───────────────────────────────────────────────────────────────────────────
+describe('WORK: тай-брейк — WORK (код 7) на точном равенстве проигрывает меньшему коду', () => {
+  // Дикая территория (loc4): danger 0.4 ⇒ safety=0.6, вода есть, дичи не селим.
+  // Спокойный работник днём: WORK = W.work·safety·1 = 0.5·0.6 = 0.3 (needCalm=1).
+  // DRINK = waterHere·W.water = 1·0.3 = 0.3 (thirst=0). 0.3 === 0.3 бит-в-бит
+  // (проверено IEEE754: 0.5*0.6 === 1*0.3). Оба — глобальный максимум (SLEEP день
+  // 0.18, FORAGE 0.155, REST 0.1). Побеждает DRINK (код 2 < WORK 7): работа —
+  // ПОСЛЕДНЯЯ в массиве кандидатов и со строгим `>` не вытесняет равный максимум.
+  it('WORK==DRINK (loc4, спокоен, день) → DRINK (меньший код), НЕ WORK', () => {
+    const w = createSimWorld(340 as Seed);
+    const eid = placeWorker(w, { loc: 4, home: 4, workplace: 4 }); // все нужды 0, еды нет, дичи нет
+    evalAt(w, DAY_TICK);
+    expect(TSK.kind[eid]).toBe(TaskKind.DRINK); // тай-брейк отдал победу коду 2
+    expect(TSK.kind[eid]).not.toBe(TaskKind.WORK); // WORK (7) уступает на равенстве
+  });
+
+  it('детерминизм тай-брейка: 4 прогона того же среза → всегда DRINK (не «мигает» на WORK)', () => {
+    for (let i = 0; i < 4; i++) {
+      const w = createSimWorld((341 + i) as Seed);
+      const eid = placeWorker(w, { loc: 4, home: 4, workplace: 4 });
+      evalAt(w, DAY_TICK);
+      expect(TSK.kind[eid]).toBe(TaskKind.DRINK);
+    }
+  });
+
+  it('контраст: тот же спокойный работник на loc0 (safety 0.95) — WORK строго выше DRINK ⇒ WORK', () => {
+    // На loc0 WORK=0.5·0.95=0.475 > DRINK 0.3: работа НЕ вообще-слабее, а именно на
+    // ноже равенства уступает. Смещаем безопасность вверх — WORK честно побеждает.
+    const w = createSimWorld(345 as Seed);
+    const eid = placeWorker(w, { loc: 0, home: 0, workplace: 0 });
+    evalAt(w, DAY_TICK);
+    expect(TSK.kind[eid]).toBe(TaskKind.WORK);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// СМЕНА ДЕНЬ→НОЧЬ: работник днём WORK, ночью SLEEP — причинно, +1 событие на СМЕНЕ,
+// не каждый тик; штамп перецеплен. «Рабочий день» замыкается сам, без расписания.
+// ───────────────────────────────────────────────────────────────────────────
+describe('WORK: суточный переход день→ночь замыкает смену в сон (причинно, D-032)', () => {
+  it('день WORK → ночь SLEEP: ровно +1 task/selected на смене, causeEvent перештампован', () => {
+    const w = createSimWorld(350 as Seed);
+    const eid = placeWorker(w, { loc: 0, home: 0, workplace: 0 }); // спокоен, дома=рабочее место
+    const sched = taskScheduler();
+
+    // Дневная смена: несколько тиков подряд днём ⇒ один выбор WORK, дальше тишина.
+    for (let i = 0; i < 5; i++) {
+      w.tick = DAY_TICK;
+      sched.tickOnce(w);
+    }
+    expect(TSK.kind[eid]).toBe(TaskKind.WORK);
+    const dayEvents = taskEvents(w, eid);
+    expect(dayEvents).toHaveLength(1); // стабильная смена не плодит событий (D-032)
+    const workCause = TSK.causeEvent[eid];
+
+    // Наступает ночь: WORK выпадает из argmax (−∞), спокойный дома → SLEEP.
+    w.tick = NIGHT_TICK;
+    sched.tickOnce(w);
+    expect(TSK.kind[eid]).toBe(TaskKind.SLEEP);
+    const afterNight = taskEvents(w, eid);
+    expect(afterNight).toHaveLength(2); // РОВНО одно новое событие на переходе
+    expect(TSK.causeEvent[eid]).toBe(afterNight[1]!.id); // штамп перецеплен на смену
+    expect(TSK.causeEvent[eid]).not.toBe(workCause); // причина реально сменилась
+
+    // Ночь продолжается: SLEEP держится, событий БОЛЬШЕ не публикуется (не каждый тик).
+    for (let i = 0; i < 5; i++) {
+      w.tick = NIGHT_TICK;
+      sched.tickOnce(w);
+    }
+    expect(TSK.kind[eid]).toBe(TaskKind.SLEEP);
+    expect(taskEvents(w, eid)).toHaveLength(2); // всё ещё 2 — ночь не перештамповывает
+
+    // И обратно: рассвет возвращает на смену (WORK) — ещё +1 событие (симметрично).
+    w.tick = DAY_TICK;
+    sched.tickOnce(w);
+    expect(TSK.kind[eid]).toBe(TaskKind.WORK);
+    expect(taskEvents(w, eid)).toHaveLength(3);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// РАБОТНИК ИЗДАЛЕКА: Movement ВЕДЁТ к workplace по рёбрам (не телепорт); пришёл —
+// остаётся на смене (targetLoc==loc==workplace, dest осел). Работа — не latent idle.
+// ───────────────────────────────────────────────────────────────────────────
+describe('WORK: путь к рабочему месту идёт по рёбрам, по прибытии смена держится', () => {
+  it('работник в Баре (loc5), workplace=Кордон(loc0): доходит мультихопом и ОСТАЁТСЯ работать', () => {
+    const w = createSimWorld(360 as Seed);
+    const eid = placeWorker(w, { loc: 5, home: 5, workplace: 0 });
+    const s = createScheduler();
+    s.register(TaskSelection);
+    s.register(Movement);
+
+    // Фиксируем перемещение ПО РЁБРАМ: собираем все посещённые loc из move/arrived.
+    const visited: number[] = [];
+    let prev = POS.loc[eid] as number;
+    for (let t = 0; t < 140; t++) {
+      w.tick = (DAY_TICK + t) as Tick;
+      s.tickOnce(w);
+      const cur = POS.loc[eid] as number;
+      if (cur !== prev) {
+        // Шаг обязан быть по существующему ребру карты (не телепорт).
+        expect(neighbors(prev as LocationId)).toContain(cur as LocationId);
+        visited.push(cur);
+        prev = cur;
+      }
+    }
+    expect(POS.loc[eid]).toBe(0); // дошёл до рабочего места
+    expect(visited[visited.length - 1]).toBe(0);
+    expect(visited.length).toBeGreaterThanOrEqual(2); // реально шёл (мультихоп 5→2→1→0)
+
+    // Пришёл — смена держится: цель==текущая==workplace, движение осело (dest==loc).
+    expect(TSK.kind[eid]).toBe(TaskKind.WORK);
+    expect(TSK.targetLoc[eid]).toBe(0);
+    expect(POS.dest[eid]).toBe(POS.loc[eid]); // Movement no-op на месте (не latent idle)
+
+    // Ещё тики на месте: остаётся WORK, новых task/selected нет (D-032).
+    const before = taskEvents(w, eid).length;
+    for (let t = 140; t < 160; t++) {
+      w.tick = (DAY_TICK + t) as Tick;
+      s.tickOnce(w);
+    }
+    expect(TSK.kind[eid]).toBe(TaskKind.WORK);
+    expect(taskEvents(w, eid).length).toBe(before); // осел — не перевыбирает
+  });
+
+  it('несколько работников с РАЗНЫМИ workplace: каждый доходит на СВОЁ место', () => {
+    const w = createSimWorld(361 as Seed);
+    const toKordon = placeWorker(w, { loc: 5, home: 5, workplace: 0 }); // 5→…→0
+    const stayBar = placeWorker(w, { loc: 5, home: 5, workplace: 5 }); // уже на месте
+    const toBar = placeWorker(w, { loc: 0, home: 0, workplace: 5 }); // 0→…→5
+    const s = createScheduler();
+    s.register(TaskSelection);
+    s.register(Movement);
+    for (let t = 0; t < 140; t++) {
+      w.tick = (DAY_TICK + t) as Tick;
+      s.tickOnce(w);
+    }
+    expect(POS.loc[toKordon]).toBe(0);
+    expect(POS.loc[stayBar]).toBe(5);
+    expect(POS.loc[toBar]).toBe(5);
+    for (const e of [toKordon, stayBar, toBar]) {
+      expect(TSK.kind[e]).toBe(TaskKind.WORK);
+      expect(TSK.targetLoc[e]).toBe(JOB.workplace[e]); // каждый на СВОЁМ рабочем месте
+      expect(POS.loc[e]).toBe(JOB.workplace[e]);
+    }
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// ЭКОНОМ-ИНВАРИАНТ (закон №3): WORK-выбор и путь на смену НЕ двигают массу.
+// TaskSelection/Movement публикуют только task/*, move/* — ни item/*, ни денег.
+// ───────────────────────────────────────────────────────────────────────────
+describe('WORK: смена не создаёт и не двигает предметы/деньги (закон №3)', () => {
+  it('прогон работника на смену → в логе нет ни одного item/* события; money не тронут', () => {
+    const w = createSimWorld(370 as Seed);
+    const eid = placeWorker(w, { loc: 5, home: 5, workplace: 0 });
+    w.resources.set<number>('money', eid, 250);
+    const s = createScheduler();
+    s.register(TaskSelection);
+    s.register(Movement);
+    for (let t = 0; t < 140; t++) {
+      w.tick = (DAY_TICK + t) as Tick;
+      s.tickOnce(w);
+    }
+    expect(TSK.kind[eid]).toBe(TaskKind.WORK);
+    const itemEvents = w.bus.log.filter((e) => e.type.startsWith('item/'));
+    expect(itemEvents).toHaveLength(0); // выбор задачи/ходьба не леджерят предметы
+    expect(w.resources.get<number>('money', eid)).toBe(250); // деньги не сдвинулись
+    // Все события прогона — только про распорядок и перемещение (не про массу).
+    const types = new Set(w.bus.log.map((e) => e.type));
+    for (const t of types) {
+      expect(t.startsWith('task/') || t.startsWith('move/')).toBe(true);
+    }
   });
 });

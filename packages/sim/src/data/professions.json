@@ -1,10 +1,10 @@
 {
   "professions": [
-    { "id": "stalker", "name": "Сталкер" },
-    { "id": "hunter", "name": "Охотник" },
-    { "id": "scavenger", "name": "Барахольщик" },
-    { "id": "medic", "name": "Санитар" },
-    { "id": "mechanic", "name": "Технарь" },
-    { "id": "trader", "name": "Торговец" }
+    { "id": "stalker", "name": "Сталкер", "workTasks": [] },
+    { "id": "hunter", "name": "Охотник", "workTasks": [] },
+    { "id": "scavenger", "name": "Барахольщик", "workTasks": [] },
+    { "id": "medic", "name": "Санитар", "workTasks": ["heal"] },
+    { "id": "mechanic", "name": "Технарь", "workTasks": ["repair"] },
+    { "id": "trader", "name": "Торговец", "workTasks": ["trade"] }
   ]
 }
