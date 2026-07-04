@@ -30,7 +30,7 @@ import type { SystemCtx } from '../core/system';
 import { serialize, deserialize, hashSnapshot } from '../core/snapshot';
 import { HEALTH_MAX } from '../balance/needs';
 import { worldgen } from '../worldgen';
-import { STALKER_COUNT } from '../balance/worldgen';
+import { STALKER_COUNT, BANDIT_COUNT, SETTLEMENT_RESIDENTS } from '../balance/worldgen';
 import { getSettlements, neighbors } from '../data/index';
 import { Needs as NeedsSystem } from './needs';
 import { Perception } from './perception';
@@ -236,9 +236,12 @@ describe('0 idle: каждый живой Human получает валидны�
     taskScheduler().run(w, 3);
 
     const humans = queryEntities(w.ecs, [Human, Alive]);
-    // 20 сталкеров + по торговцу на поселение (2.2) — торговцы тоже Human+Alive и
-    // ТОЖЕ получают Task (не idle, закон №4/D-020).
-    expect(humans.length).toBe(STALKER_COUNT + getSettlements().length);
+    // Все живые люди генезиса 2.16b (D-065): 20 одиночек + 4 бандита + на поселение
+    // (1 торговец + SETTLEMENT_RESIDENTS резидентов) — ВСЕ Human+Alive и ВСЕ получают
+    // Task (не idle, закон №4/D-020), включая бандитов/резидентов.
+    expect(humans.length).toBe(
+      STALKER_COUNT + BANDIT_COUNT + getSettlements().length * (1 + SETTLEMENT_RESIDENTS),
+    );
     const validKinds = new Set<number>(Object.values(TaskKind));
     for (const eid of humans) {
       expect(hasComponent(w.ecs, Task, eid)).toBe(true);

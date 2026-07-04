@@ -68,6 +68,17 @@ export interface EventBus {
   publish<E extends SimEvent>(e: Omit<E, 'id' | 'tick'>): EventId;
   /** События, ЗАФИКСИРОВАННЫЕ на данном тике (в порядке id). */
   at(tick: Tick): readonly SimEvent[];
+  /**
+   * Самое СВЕЖЕЕ (наибольший id) ЗАФИКСИРОВАННОЕ событие, удовлетворяющее `pred`,
+   * либо `undefined` (нет такого). Скан с конца лога БЕЗ КОПИИ (перф, 2.16b): в
+   * отличие от `for (const ev of bus.log)` (полная копия+обход всего лога на каждый
+   * вызов), это горячий путь reverse-поиска «последнего события типа/сущности»
+   * (Perception/Weather зовут его часто) — копировать сотни тысяч событий на каждый
+   * вызов недопустимо. Результат тождествен `[...log].reverse().find(pred)`: лог
+   * упорядочен по возрастанию id (append-only), поэтому первое совпадение с конца =
+   * событие с наибольшим id. Буфер текущего тика НЕ виден (как `log`, D-005).
+   */
+  findLast(pred: (ev: SimEvent) => boolean): SimEvent | undefined;
   /** Все зафиксированные события с `tick` включительно и позже (в порядке id). */
   drainSince(tick: Tick): readonly SimEvent[];
   /**
@@ -137,6 +148,26 @@ export function createEventBus(getTick: () => Tick, init?: EventBusInit): EventB
   const log: SimEvent[] = init?.log
     ? init.log.map((ev) => freezeEvent(ev))
     : [];
+  // ── ИНДЕКС ПО ТИКУ (перф, задача 2.16b) ────────────────────────────────────
+  // `at(tick)` — ГОРЯЧИЙ путь: RobberyMemory зовёт его КАЖДЫЙ тик (bus.at(tick−1)).
+  // Наивный `log.filter(ev.tick===tick)` — O(длины лога) на вызов ⇒ за прогон
+  // O(тиков × длины лога) = КВАДРАТ (при плотном логе Фазы 2 лог растёт до сотен
+  // тысяч событий, и 100-дневный прогон деградирует до минут). Индекс `tick → []`
+  // делает `at` O(числа событий тика). РЕЗУЛЬТАТ ТОЖДЕСТВЕН: bucket наполняется в
+  // endTick в ТОМ ЖЕ порядке публикаций (по возрастанию id), что и прежний filter,
+  // поэтому at() отдаёт те же события в том же порядке — хэши/голдены НЕ меняются
+  // (at() копирует bucket ради контракта иммутабельности; копия дёшева — один тик).
+  const byTick = new Map<number, SimEvent[]>();
+  for (const ev of log) {
+    let bucket = byTick.get(ev.tick);
+    if (bucket === undefined) {
+      bucket = [];
+      byTick.set(ev.tick, bucket);
+    }
+    bucket.push(ev);
+  }
+  /** Стабильный пустой ответ at() для тика без событий (не аллоцируем на каждый промах). */
+  const EMPTY: readonly SimEvent[] = Object.freeze([]);
   // Буфер событий текущего тика; переносится в лог в endTick и очищается.
   let buffer: SimEvent[] = [];
   // Монотонный счётчик выданных id. НЕ сбрасывается на endTick (C-4).
@@ -154,7 +185,20 @@ export function createEventBus(getTick: () => Tick, init?: EventBusInit): EventB
     },
 
     at(tick: Tick): readonly SimEvent[] {
-      return log.filter((ev) => ev.tick === tick);
+      // O(событий ТИКА) через индекс (см. byTick выше) вместо O(всего лога) фильтра.
+      // КОПИЯ bucket'а (контракт иммутабельности: мутация результата не трогает лог) —
+      // дёшева, т.к. это события ОДНОГО тика (единицы-десятки), а не весь лог.
+      const bucket = byTick.get(tick);
+      return bucket === undefined ? EMPTY : bucket.slice();
+    },
+
+    findLast(pred: (ev: SimEvent) => boolean): SimEvent | undefined {
+      // Скан с конца ВНУТРЕННЕГО лога без копии (перф): первое совпадение = свежайшее.
+      for (let i = log.length - 1; i >= 0; i--) {
+        const ev = log[i] as SimEvent;
+        if (pred(ev)) return ev;
+      }
+      return undefined;
     },
 
     drainSince(tick: Tick): readonly SimEvent[] {
@@ -174,6 +218,14 @@ export function createEventBus(getTick: () => Tick, init?: EventBusInit): EventB
           );
         }
         log.push(ev);
+        // Индекс по тику: bucket наполняется в порядке публикаций (id) — at() отдаёт
+        // тот же порядок, что прежний filter (результат тождествен, хэши целы).
+        let bucket = byTick.get(ev.tick);
+        if (bucket === undefined) {
+          bucket = [];
+          byTick.set(ev.tick, bucket);
+        }
+        bucket.push(ev);
       }
       // Новый массив, а не .length = 0: уже отданные ссылки на буфер (если
       // кто-то их держал) не должны обнулиться задним числом.

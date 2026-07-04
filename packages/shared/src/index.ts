@@ -53,4 +53,6 @@ export type {
   SettlementConsumption,
   SettlementData,
   SettlementsData,
+  AnomalyFieldData,
+  AnomalyFieldsData,
 } from './data';

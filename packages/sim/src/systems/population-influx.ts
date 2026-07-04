@@ -177,8 +177,9 @@ function isBanditryEncounter(
 
 /**
  * Детерминированно вычисляет привлекательность Зоны по ОКНУ лога `[fromTick, toTick]`
- * (оба включительно). Проходит `bus.log` один раз в порядке публикаций (стабилен,
- * закон №8), считает слагаемые и взвешенную сумму. Read-only: мир/лог не трогает.
+ * (оба включительно). Обходит события окна через индекс шины (`bus.at` по тикам
+ * fromTick..toTick — O(событий окна), перф 2.16b), считает слагаемые и взвешенную
+ * сумму (порядок счёта не важен — коммутативно). Read-only: мир/лог не трогает.
  * ЭКСПОРТИРУЕТСЯ для тестов и объяснимого reason (D-030).
  */
 export function computeAttractiveness(
@@ -193,26 +194,32 @@ export function computeAttractiveness(
   let deaths = 0;
   let banditry = 0;
 
-  for (const ev of bus.log) {
-    if (ev.tick < fromTick || ev.tick > toTick) continue;
-    switch (ev.type) {
-      case 'artifact/spawned':
-        artifactsSpawned++;
-        break;
-      case 'artifact/collected':
-        artifactsCollected++;
-        break;
-      case 'item/exported':
-        exports++;
-        break;
-      case 'entity/died':
-        deaths++;
-        break;
-      case 'encounter/started':
-        if (isBanditryEncounter(world, ev.payload.sides)) banditry++;
-        break;
-      default:
-        break; // прочие события привлекательность не меняют
+  // Обход ОКНА через индекс шины `bus.at(t)` (перф, 2.16b): O(событий окна) вместо
+  // `bus.log` (полная копия+скан всего лога на каждый вызов ⇒ O(тиков × лога) за
+  // прогон). Порядок счёта не важен (счётчики/суммы коммутативны) ⇒ результат
+  // тождествен прежнему проходу по log — хэши/голдены целы. `bus.at` отдаёт события
+  // тика по возрастанию id (индекс наполнен в порядке публикаций).
+  for (let t = fromTick; t <= toTick; t++) {
+    for (const ev of bus.at(t as Tick)) {
+      switch (ev.type) {
+        case 'artifact/spawned':
+          artifactsSpawned++;
+          break;
+        case 'artifact/collected':
+          artifactsCollected++;
+          break;
+        case 'item/exported':
+          exports++;
+          break;
+        case 'entity/died':
+          deaths++;
+          break;
+        case 'encounter/started':
+          if (isBanditryEncounter(world, ev.payload.sides)) banditry++;
+          break;
+        default:
+          break; // прочие события привлекательность не меняют
+      }
     }
   }
 

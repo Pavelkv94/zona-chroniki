@@ -41,6 +41,7 @@ import {
   Needs,
   Health,
   Task,
+  Job,
 } from './core/components';
 import { worldgen } from './worldgen';
 import { TICKS_PER_DAY } from './balance/time';
@@ -211,20 +212,24 @@ describe('торговец — смертный ординарный NPC, жив
     }
   });
 
-  it('за 30 дней торговец НЕ idle: берёт задачи, УХОДИТ из поселения (ординарный распорядок)', () => {
-    // Торговец подчиняется TaskSelection/Movement как все: он не «прилипает» к базе.
+  it('за 30 дней торговец НЕ idle: ТРУДОУСТРОЕН (наём 2.16b) и берёт задачи', () => {
+    // 2.16b (D-065): worldgen зовёт assignJobs ⇒ торговец (оседлая профессия) получает
+    // Job на своё поселение. TaskSelection выбирает ему WORK (стоит за прилавком —
+    // доступен для торговли), а не бродит. Пин: торговец НЕ idle (закон №4) и реально
+    // трудоустроен на своё поселение (employer — сущность-поселение его loc).
     const { world, scheduler } = buildLive(42);
     const traders = new Set(traderEids(world));
     const homeLoc = new Map([...traders].map((t) => [t, HOME.loc[t]!]));
-    const leftHome = new Set<EntityId>();
+    const JOB = Job as unknown as { workplace: Uint32Array };
 
-    // Позицию сэмплируем каждый тик (после смерти позиция «застывает» — но факт ухода
-    // с прилавка уже зафиксируется). Факт получения задачи берём из ЛОГА (task/selected
-    // переживает смерть носителя, в отличие от компонента Task, снятого Death).
-    for (let i = 0; i < TICKS_PER_DAY * 30; i++) {
-      scheduler.run(world, 1);
-      for (const t of traders) if (POS.loc[t] !== homeLoc.get(t)) leftHome.add(t);
+    // На генезисе (после assignJobs в worldgen) каждый торговец — носитель Job,
+    // рабочее место = loc своего поселения (D-046 хвост: employer/workplace выставлены).
+    for (const t of traders) {
+      expect(hasComponent(world.ecs, Job, t)).toBe(true);
+      expect(JOB.workplace[t]).toBe(homeLoc.get(t));
     }
+
+    scheduler.run(world, TICKS_PER_DAY * 30);
 
     const traderTasked = new Set<EntityId>();
     for (const e of world.bus.log) {
@@ -232,10 +237,9 @@ describe('торговец — смертный ординарный NPC, жив
       const eid = (e.payload as { eid: EntityId }).eid;
       if (traders.has(eid)) traderTasked.add(eid);
     }
-    // Каждый торговец хоть раз получал задачу (0 idle, закон №4) и уходил из базы —
-    // значит он живёт как ординарный NPC, а не как статичный «магазин».
+    // Каждый торговец хоть раз получал задачу (0 idle, закон №4) — живёт как
+    // ординарный смертный NPC, но теперь как ТРУДОУСТРОЕННЫЙ работник поселения.
     expect(traderTasked.size).toBe(traders.size);
-    expect(leftHome.size).toBe(traders.size);
   }, 30000);
 
   it('торговец СМЕРТЕН: за 30 дней (seed 7) гибнет как обычный NPC (нет спец-защиты, D-051)', () => {

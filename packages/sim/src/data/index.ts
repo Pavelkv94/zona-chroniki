@@ -37,6 +37,7 @@ import type {
   ProfessionData,
   NamesData,
   SettlementData,
+  AnomalyFieldData,
 } from '@zona/shared';
 
 import mapRaw from './map.json';
@@ -46,6 +47,7 @@ import namesRaw from './names.json';
 import factionsRaw from './factions.json';
 import professionsRaw from './professions.json';
 import settlementsRaw from './settlements.json';
+import anomalyFieldsRaw from './anomaly_fields.json';
 
 /** Ошибка валидации/связности контента. Бросается при загрузке модуля. */
 export class DataError extends Error {
@@ -379,6 +381,54 @@ function validateSettlements(
   return settlements;
 }
 
+// ── Валидация аномальных полей (закон №10, задача 2.16b) ─────────────────────
+
+/**
+ * Валидирует `anomaly_fields.json` (Фаза 2, задача 2.16b): каждое поле стоит на
+ * РЕАЛЬНОЙ локации ГЛУБОКОЙ Зоны (`map.locations[loc].type ∈ {wild, ruins}` —
+ * связность с картой + D-025 «аномалии живут в дикой/руинной глубине», выражено
+ * через ДАННЫЕ-тип, а НЕ хардкод-id), `loc` в диапазоне карты, `tier` — целое >=0
+ * (отображается в артефакт через `getArtifactForTier`, который клампит ступень выше
+ * контента — поэтому достаточно неотрицательного целого; закон №3/№10). Несколько
+ * полей на одной локации ДОПУСТИМЫ (несколько аномалий в одном узле — не ошибка).
+ * `locType` — инъекция резолвера типа локации (модульный `MAP.locations[loc].type`).
+ *
+ * ── Закон №3: поля НЕ несут стартовой массы ────────────────────────────────
+ * Здесь проверяется лишь РАЗМЕЩЕНИЕ и ступень: стартового склада у поля нет
+ * (charge=0, лут пуст — материализует worldgen 2.16b), поэтому валидировать
+ * инвентарь/кассу (как у поселений) не нужно — базлайн EconomyInvariant от полей
+ * не растёт.
+ */
+function validateAnomalyFields(
+  data: unknown,
+  locCount: number,
+  locType: (loc: number) => string | undefined,
+): readonly AnomalyFieldData[] {
+  assert(data !== null && typeof data === 'object', 'anomaly_fields.json: не объект');
+  const arr = (data as { fields?: unknown }).fields;
+  assert(Array.isArray(arr), 'anomaly_fields.json: fields должен быть массивом');
+  const fields = arr as AnomalyFieldData[];
+  assert(fields.length > 0, 'anomaly_fields.json: список пуст');
+  fields.forEach((f, i) => {
+    assert(
+      Number.isInteger(f.loc) && f.loc >= 0 && f.loc < locCount,
+      `поле #${i}: loc=${f.loc} вне диапазона локаций`,
+    );
+    // ГЛУБОКАЯ ЗОНА (D-025): поле обязано стоять в wild/ruins — выражено через ДАННЫЕ
+    // (тип локации), а не через хардкод конкретной локации (future-proof для новых карт).
+    const t = locType(f.loc);
+    assert(
+      t === 'wild' || t === 'ruins',
+      `поле loc=${f.loc}: локация type '${t}' — аномальные поля живут только в wild/ruins (D-025)`,
+    );
+    assert(
+      Number.isInteger(f.tier) && f.tier >= 0,
+      `поле loc=${f.loc}: tier=${f.tier} должен быть целым >=0 (ступень артефакта, D-054)`,
+    );
+  });
+  return fields;
+}
+
 // ── Валидация имён ──────────────────────────────────────────────────────────
 
 /** Минимум имён/фамилий для приемлемого разнообразия NPC (закон №4). */
@@ -494,6 +544,21 @@ const SETTLEMENT_BY_LOC: ReadonlyMap<number, SettlementData> = new Map(
   SETTLEMENTS.map((s) => [s.loc, s]),
 );
 
+/**
+ * Валидированный и замороженный список аномальных полей (Фаза 2, задача 2.16b,
+ * закон №10). Резолвер типа локации инъектируется замыканием над MAP (проверка
+ * wild/ruins, D-025). worldgen 2.16b материализует по одному носителю AnomalyField
+ * (charge=0, лут пуст) на каждую запись — дремлющая система ArtifactSpawn (2.9)
+ * оживает и рождает артефакты В ПРОГОНЕ (item/harvested, EconomyInvariant держится).
+ */
+export const ANOMALY_FIELDS: readonly AnomalyFieldData[] = deepFreeze(
+  validateAnomalyFields(
+    anomalyFieldsRaw,
+    MAP.locations.length,
+    (loc) => MAP.locations[loc]?.type,
+  ),
+);
+
 /** Каноническая пара фракций → value отношения (симметрично, детерминизм ключа). */
 const RELATION_BY_PAIR: ReadonlyMap<string, number> = new Map(
   RELATIONS.map((r) => [relationKey(r.a, r.b), r.value]),
@@ -607,6 +672,11 @@ export function getProfession(id: string): ProfessionData {
 /** Все поселения (в порядке файла settlements.json). Иммутабельны. */
 export function getSettlements(): readonly SettlementData[] {
   return SETTLEMENTS;
+}
+
+/** Все аномальные поля (в порядке файла anomaly_fields.json). Иммутабельны. */
+export function getAnomalyFields(): readonly AnomalyFieldData[] {
+  return ANOMALY_FIELDS;
 }
 
 /**

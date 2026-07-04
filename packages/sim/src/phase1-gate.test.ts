@@ -39,14 +39,18 @@ import { queryEntities, hasComponent, allEntities } from './core/ecs';
 import { Human, Alive, Animal, Task, Needs, Position } from './core/components';
 import { TICKS_PER_DAY } from './balance/time';
 import { edgeLen, SPECIES, getSettlements } from './data/index';
-import { STALKER_COUNT } from './balance/worldgen';
+import { STALKER_COUNT, BANDIT_COUNT, SETTLEMENT_RESIDENTS } from './balance/worldgen';
 
 /**
- * Стартовое число живых людей мира = 20 сталкеров (Кордон) + по одному торговцу
- * на поселение (задача 2.2, D-051 — смертный Human-NPC на loc каждого поселения).
- * Оба — Human+Alive, поэтому оба входят в старт-население гейта.
+ * Стартовое число живых людей мира (задача 2.16b, D-065):
+ *   • 20 сталкеров-одиночек (Кордон);
+ *   • BANDIT_COUNT бандитов в логове (фракция bandits predatory ⇒ ROB);
+ *   • на КАЖДОЕ поселение: 1 торговец (2.2, D-051) + SETTLEMENT_RESIDENTS резидентов.
+ * Все — Human+Alive, поэтому все входят в старт-население гейта. Поля/поселения — НЕ
+ * Human (в счётчик не входят).
  */
-const HUMANS_AT_START = STALKER_COUNT + getSettlements().length;
+const HUMANS_AT_START =
+  STALKER_COUNT + BANDIT_COUNT + getSettlements().length * (1 + SETTLEMENT_RESIDENTS);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ПАРАМЕТРЫ ГЕЙТА
@@ -66,10 +70,13 @@ const SEEDS = [42, 7, 999] as const;
  * Пере-закреплён задачей 2.16a (D-064): гейт стоит на РЕАЛЬНОМ конвейере, а он
  * переключён на registerPhase2Systems (17 систем) — оживают Economy/Trade/
  * PopulationInflux (поля/бандиты ещё не в worldgen ⇒ ArtifactSpawn/Search/Export/
- * RobberyMemory/MemoryDecay дремлют) → 165688eb → 675e1485. Тот же голден, что
- * cli.test day1 seed42 (единый путь сборки, D-042).
+ * RobberyMemory/MemoryDecay дремлют) → 165688eb → 675e1485. Пере-закреплён задачей
+ * 2.16b (D-065): worldgen оживил ДРЕМЛЮЩИЕ петли (3 поля AnomalyField, 4 бандита
+ * predatory, резиденты + assignJobs) — новые сущности сдвигают поток world.rng, а
+ * все 17 систем реально работают → 675e1485 → 1d52f17d. Тот же голден, что cli.test
+ * day1 seed42 (единый путь сборки, D-042). Перф-фиксы шины (2.16b) результат-тождественны.
  */
-const GOLDEN_DAY1_SEED42 = '675e1485';
+const GOLDEN_DAY1_SEED42 = '1d52f17d';
 /** Максимальный выход мяса с одной туши среди видов — верхняя граница «мясо с туш». */
 const MAX_MEAT_YIELD = Math.max(...SPECIES.map((s) => s.meatYield));
 
@@ -139,6 +146,8 @@ interface Profile {
   readonly animalsEnd: number;
   readonly ammoStart: number;
   readonly ammoEnd: number;
+  /** ammo_9mm, внесённый новоприбывшими из-за Периметра (item/broughtIn, D-061). */
+  readonly ammoBroughtIn: number;
   readonly meatStart: number;
   readonly meatEnd: number;
   /** Верхняя граница мяса, объяснимого тушами: суммарные жертвы × MAX_MEAT_YIELD. */
@@ -162,10 +171,24 @@ function runProfile(seed: number): Profile {
     scheduler.tickOnce(world);
     const T = t as Tick; // тик, который только что отработал
 
-    // ЗАКОН №4: каждый живой сталкер после тика ИМЕЕТ задачу И нужды.
+    // События ТОЛЬКО этого тика — через индекс шины bus.at(T) (перф, 2.16b: раньше
+    // тут был скан всего растущего лога КАЖДЫЙ тик). Собираем move/arrived (телепорт-
+    // чек) и population/arrived (грация новичкам, ниже) одним проходом.
+    const arrivedThisTick = new Map<EntityId, number>();
+    const bornThisTick = new Set<EntityId>();
+    for (const ev of world.bus.at(T)) {
+      if (ev.type === 'move/arrived') arrivedThisTick.set(ev.payload.eid, ev.payload.at);
+      else if (ev.type === 'population/arrived') bornThisTick.add(ev.payload.eid as EntityId);
+    }
+
+    // ЗАКОН №4: каждый живой сталкер после тика ИМЕЕТ задачу И нужды. ИСКЛЮЧЕНИЕ —
+    // НОВИЧОК, ПРИБЫВШИЙ ЭТИМ ТИКОМ (PopulationInflux, D-061): он спавнится ПОЗЖЕ
+    // TaskSelection в тике (позиция 15 > 6), поэтому Task получит на СЛЕДУЮЩЕМ тике —
+    // так же, как генезис-когорта получает Task на тике 0 (не «завис idle», а «только
+    // что вошёл в Зону»). Один тик без Task у свежеприбывшего — не нарушение закона №4.
     const humans = queryEntities(world.ecs, [Human, Alive]);
     for (const eid of humans) {
-      if (!hasComponent(world.ecs, Task, eid)) {
+      if (!hasComponent(world.ecs, Task, eid) && !bornThisTick.has(eid)) {
         idleViolations.push({ tick: T, eid, detail: 'Human+Alive без Task (idle)' });
       }
       if (!hasComponent(world.ecs, Needs, eid)) {
@@ -174,12 +197,6 @@ function runProfile(seed: number): Profile {
     }
 
     // НЕТ ТЕЛЕПОРТОВ: позиция меняется ТОЛЬКО через прибытие по ребру графа.
-    const arrivedThisTick = new Map<EntityId, number>();
-    for (const ev of world.bus.log) {
-      if (ev.tick === T && ev.type === 'move/arrived') {
-        arrivedThisTick.set(ev.payload.eid, ev.payload.at);
-      }
-    }
     for (const eid of allEntities(world.ecs)) {
       const cur = POS.loc[eid];
       const prev = prevLoc.get(eid);
@@ -204,6 +221,17 @@ function runProfile(seed: number): Profile {
   const deaths = log.filter((e): e is SimEvent & { type: 'entity/died' } => e.type === 'entity/died');
   const encountersResolved = log.filter((e) => e.type === 'encounter/resolved');
   const born = log.filter((e) => e.type === 'animal/born').length;
+
+  // Патроны, ФИЗИЧЕСКИ ВНЕСЁННЫЕ из-за Периметра новоприбывшими (PopulationInflux,
+  // D-051/D-061): каждый новичок несёт STARTING_INVENTORY с ammo_9mm, залежерённый
+  // item/broughtIn. Это ЛЕГАЛЬНЫЙ приток (не «из воздуха») ⇒ верхняя граница ammo
+  // на конце = старт + внесено (см. MUST-7). До 2.16b притока в 10 дней не было (0).
+  let ammoBroughtIn = 0;
+  for (const e of log) {
+    if (e.type !== 'item/broughtIn') continue;
+    const p = (e as SimEvent & { type: 'item/broughtIn' }).payload;
+    for (const [item, qty] of p.items) if (item === 'ammo_9mm') ammoBroughtIn += qty;
+  }
 
   const deathBreakdown: Record<string, number> = {};
   for (const d of deaths) {
@@ -234,6 +262,7 @@ function runProfile(seed: number): Profile {
     animalsEnd: queryEntities(world.ecs, [Animal, Alive]).length,
     ammoStart,
     ammoEnd: itemTotal(world, 'ammo_9mm'),
+    ammoBroughtIn,
     meatStart,
     meatEnd: itemTotal(world, 'meat'),
     meatUpperBound: totalCasualties * MAX_MEAT_YIELD,
@@ -512,8 +541,11 @@ describe('MUST · Закон №3: охота даёт мясо, ничего н
         expect(kills.length).toBeGreaterThan(0);
       });
 
-      it('патроны только УБЫВАЮТ: суммарный ammo_9mm на конце ≤ старта (не из воздуха)', () => {
-        expect(p.ammoEnd).toBeLessThanOrEqual(p.ammoStart);
+      it('патроны не из воздуха: ammo_9mm на конце ≤ старт + ВНЕСЁННОЕ притоком (D-061)', () => {
+        // Патроны только УБЫВАЮТ (бой) ИЛИ прибывают ЛЕГАЛЬНО с новичками из-за
+        // Периметра (item/broughtIn). Верхняя граница = старт + внесено притоком; выше
+        // — значило бы эмиссию из воздуха (закон №3). С 2.16b приток оживил ammoBroughtIn.
+        expect(p.ammoEnd).toBeLessThanOrEqual(p.ammoStart + p.ammoBroughtIn);
       });
 
       it('мясо появляется ТОЛЬКО с туш: старт=0, конец>0 и ≤ границы «жертвы × выход»', () => {
@@ -529,7 +561,7 @@ describe('MUST · Закон №3: охота даёт мясо, ничего н
 // MUST-8 — ЦЕЛОСТНОСТЬ: живой прогон не падает и воспроизводит день-1 голден.
 // ═════════════════════════════════════════════════════════════════════════════
 describe('MUST · Целостность: конвейер не падает и держит живой голден', () => {
-  it('день-1/seed-42 через тот же путь сборки даёт голден 675e1485 (D-064)', () => {
+  it('день-1/seed-42 через тот же путь сборки даёт голден 1d52f17d (D-065)', () => {
     const { world, scheduler } = buildLive(42);
     scheduler.run(world, TICKS_PER_DAY);
     expect(hashSnapshot(serialize(world))).toBe(GOLDEN_DAY1_SEED42);

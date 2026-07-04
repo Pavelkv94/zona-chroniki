@@ -615,3 +615,171 @@ describe('createSimWorld: интеграция bus ↔ world.tick', () => {
     expect(publishOn()).toEqual(publishOn());
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// findLast — НОВЫЙ горячий путь reverse-поиска (перф 2.16b, D-065). Perception
+// («последний move наблюдателя/цели»), Weather («последняя смена погоды») и Death
+// («событие-причина по id») зовут его вместо `[...bus.log].reverse().find(pred)`.
+// Контракт: результат ТОЖДЕСТВЕН этому reverse-find (лог упорядочен по возрастанию
+// id ⇒ первое совпадение с конца = наибольший id). До 2.16b метода не было —
+// закрываем прямыми юнитами (иначе перф-рефактор доверен лишь голденам).
+// ═════════════════════════════════════════════════════════════════════════════
+describe('EventBus: findLast тождествен [...log].reverse().find (перф 2.16b)', () => {
+  /** Наивный эталон: перебор КОПИИ лога с конца — то, что findLast обязан заменить. */
+  const naiveReverse = (bus: EventBus, pred: (e: SimEvent) => boolean): SimEvent | undefined =>
+    [...bus.log].reverse().find(pred);
+
+  /** Богатый много-тиковый лог: 4 тика, чередование двух типов, повторы. */
+  const buildRich = (): EventBus => {
+    let tick: Tick = 0;
+    const bus = createEventBus(() => tick);
+    for (let t = 0; t < 4; t++) {
+      tick = t as Tick;
+      bus.publish({ type: 'sim/tickStarted', causedBy: null, payload: { tick: t } });
+      // На чётных тиках добавляем два snapshotTaken — плотность/повторы типа.
+      if (t % 2 === 0) {
+        bus.publish({ type: 'sim/snapshotTaken', causedBy: null, payload: { hash: `a${t}` } });
+        bus.publish({ type: 'sim/snapshotTaken', causedBy: null, payload: { hash: `b${t}` } });
+      }
+      bus.endTick(t);
+    }
+    return bus;
+  };
+
+  it('находит СВЕЖАЙШЕЕ (наибольший id) совпадение по типу — как Weather.lastWeatherChange', () => {
+    const bus = buildRich();
+    const last = bus.findLast((e) => e.type === 'sim/snapshotTaken');
+    // Наибольший id среди snapshotTaken — это b2 (тик 2, последний чётный с двумя).
+    expect(last).toBe(naiveReverse(bus, (e) => e.type === 'sim/snapshotTaken'));
+    expect(last?.type).toBe('sim/snapshotTaken');
+    expect((last as SimEvent & { type: 'sim/snapshotTaken' }).payload.hash).toBe('b2');
+    // Это действительно событие с максимальным id среди совпадений.
+    const maxId = Math.max(
+      ...bus.log.filter((e) => e.type === 'sim/snapshotTaken').map((e) => e.id as unknown as number),
+    );
+    expect(last?.id).toBe(maxId);
+  });
+
+  it('поиск по id находит ровно то событие — как Death.deriveCause(lethalCause)', () => {
+    const bus = buildRich();
+    for (const target of bus.log) {
+      const hit = bus.findLast((e) => e.id === target.id);
+      expect(hit).toBe(target); // тот же объект (уникальный id)
+    }
+  });
+
+  it('нет совпадения → undefined (никого не двигало / причины нет в логе)', () => {
+    const bus = buildRich();
+    expect(bus.findLast((e) => e.type === ('never/happened' as SimEvent['type']))).toBeUndefined();
+    expect(bus.findLast((e) => (e.id as unknown as number) > 10_000)).toBeUndefined();
+    expect(naiveReverse(bus, (e) => (e.id as unknown as number) > 10_000)).toBeUndefined();
+  });
+
+  it('тождество на РАЗНЫХ предикатах (тип, id, causedBy, комбинация)', () => {
+    const bus = buildRich();
+    const preds: ReadonlyArray<(e: SimEvent) => boolean> = [
+      (e) => e.type === 'sim/tickStarted',
+      (e) => e.type === 'sim/snapshotTaken',
+      (e) => e.tick === 0,
+      (e) => e.tick === 3,
+      (e) => e.causedBy === null,
+      (e) => (e.id as unknown as number) % 2 === 0,
+      () => true, // самое свежее событие вообще
+      () => false, // ничего
+    ];
+    for (const pred of preds) {
+      expect(bus.findLast(pred), `findLast ≠ reverse.find для предиката`).toBe(naiveReverse(bus, pred));
+    }
+  });
+
+  it('буфер ТЕКУЩЕГО тика НЕ виден findLast (как log/at, D-005)', () => {
+    let tick: Tick = 0;
+    const bus = createEventBus(() => tick);
+    bus.publish({ type: 'sim/snapshotTaken', causedBy: null, payload: { hash: 'committed' } });
+    bus.endTick(0);
+    tick = 1;
+    // Опубликовано, но НЕ зафиксировано — findLast не должен его видеть.
+    bus.publish({ type: 'sim/snapshotTaken', causedBy: null, payload: { hash: 'buffered' } });
+    const seen = bus.findLast((e) => e.type === 'sim/snapshotTaken');
+    expect((seen as SimEvent & { type: 'sim/snapshotTaken' }).payload.hash).toBe('committed');
+    // После endTick буферное становится свежайшим.
+    bus.endTick(1);
+    const after = bus.findLast((e) => e.type === 'sim/snapshotTaken');
+    expect((after as SimEvent & { type: 'sim/snapshotTaken' }).payload.hash).toBe('buffered');
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// byTick-ИНДЕКС — ПРОИЗВОДНОЕ состояние (перф 2.16b). При восстановлении из
+// снапшота (init.log — путь deserialize, D-011/D-016) индекс ПЕРЕСТРАИВАЕТСЯ из
+// лога в конструкторе. КРИТИЧНО для resume (D-008): если индекс разошёлся бы с
+// логом после load, at()/findLast вернули бы не то → resume разъехался бы. Здесь
+// проверяем консистентность индекса и лога ИМЕННО на восстановленной шине.
+// ═════════════════════════════════════════════════════════════════════════════
+describe('EventBus: byTick-индекс консистентен после restore (init.log, D-008/D-011)', () => {
+  /** Живая шина с «дырявым» набором занятых тиков (0,1,3 заняты; 2 и 4 пусты). */
+  const buildSource = (): EventBus => {
+    let tick: Tick = 0;
+    const bus = createEventBus(() => tick);
+    bus.publish({ type: 'sim/tickStarted', causedBy: null, payload: { tick: 0 } }); // t0 id1
+    bus.endTick(0);
+    tick = 1;
+    bus.publish({ type: 'sim/tickStarted', causedBy: null, payload: { tick: 1 } }); // t1 id2
+    bus.publish({ type: 'sim/snapshotTaken', causedBy: null, payload: { hash: 'x' } }); // t1 id3
+    bus.endTick(1);
+    tick = 3; // тик 2 ПРОПУЩЕН (пустой bucket)
+    bus.publish({ type: 'sim/snapshotTaken', causedBy: null, payload: { hash: 'y' } }); // t3 id4
+    bus.endTick(3);
+    return bus;
+  };
+
+  it('at(t) восстановленной шины == наивный log.filter(t) для КАЖДОГО тика (индекс перестроен верно)', () => {
+    const src = buildSource();
+    let t2: Tick = 3;
+    const restored = createEventBus(() => t2, { log: src.log, eventSeq: src.eventSeq });
+    // Сверяем индекс с логом на всём диапазоне, включая пустые/будущие тики.
+    for (let t = 0; t <= 5; t++) {
+      const viaIndex = restored.at(t as Tick).map((e) => e.id);
+      const viaFilter = restored.log.filter((e) => e.tick === t).map((e) => e.id);
+      expect(viaIndex, `at(${t}) индекса разошёлся с log.filter`).toEqual(viaFilter);
+    }
+    // Пропущенный тик 2 — пустой И через индекс, И через фильтр.
+    expect(restored.at(2 as Tick)).toEqual([]);
+  });
+
+  it('findLast восстановленной шины тождествен reverse-find по восстановленному логу', () => {
+    const src = buildSource();
+    const restored = createEventBus(() => (3 as Tick), { log: src.log, eventSeq: src.eventSeq });
+    for (const pred of [
+      (e: SimEvent) => e.type === 'sim/snapshotTaken',
+      (e: SimEvent) => e.type === 'sim/tickStarted',
+      (e: SimEvent) => e.id === (4 as EventId),
+    ]) {
+      expect(restored.findLast(pred)).toBe([...restored.log].reverse().find(pred));
+    }
+  });
+
+  it('publish ПОСЛЕ restore попадает в правильный bucket; at/findLast сразу его видят', () => {
+    const src = buildSource();
+    let t2: Tick = 3;
+    const restored = createEventBus(() => t2, { log: src.log, eventSeq: src.eventSeq });
+    // Продолжаем историю на тике 4 (был пуст) — индекс должен дорасти корректно.
+    t2 = 4;
+    const id = restored.publish({ type: 'sim/snapshotTaken', causedBy: null, payload: { hash: 'z' } });
+    restored.endTick(4);
+    expect(id).toBe(5); // eventSeq продолжен без коллизии (C-4)
+    // Новое событие видно ровно на своём тике; чужие тики не тронуты.
+    expect(restored.at(4 as Tick).map((e) => e.id)).toEqual([5]);
+    expect(restored.at(3 as Tick).map((e) => e.id)).toEqual([4]); // прежний bucket цел
+    // findLast теперь отдаёт свежайшее (тик 4), тождественно reverse-find.
+    const last = restored.findLast((e) => e.type === 'sim/snapshotTaken');
+    expect(last?.id).toBe(5);
+    expect(last).toBe([...restored.log].reverse().find((e) => e.type === 'sim/snapshotTaken'));
+    // Индекс по-прежнему совпадает с логом на всём диапазоне.
+    for (let t = 0; t <= 5; t++) {
+      expect(restored.at(t as Tick).map((e) => e.id)).toEqual(
+        restored.log.filter((e) => e.tick === t).map((e) => e.id),
+      );
+    }
+  });
+});

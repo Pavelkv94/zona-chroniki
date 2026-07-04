@@ -1,19 +1,27 @@
 /**
  * @module @zona/sim/worldgen
  *
- * Стартовая генерация мира (задача 1.3; расширена 2.2; рефактор 2.14a — D-059).
- * Рождение ОДНОГО человека вынесено в переиспользуемую `spawnStalker(world,rng,cfg)`:
- * worldgen зовёт её в цикле (когорта 20) и на торговцев, а PopulationInflux (2.14/
- * D-051, приток) позже — на новоприбывших. Поведение worldgen НЕ изменилось (голдены
- * Фазы 1 бит-в-бит: порядок и число rng-вызовов сохранены). Вызывается РОВНО ОДИН РАЗ
- * при сборке мира (headless-CLI 1.12), ДО первого тика планировщика. Населяет пустой
- * `SimWorld` сущностью-миром (WorldClock singleton), 20 сталкерами в Кордоне, стадами
- * животных в глубоких диких/руинных локациях и (2.2) ПОСЕЛЕНИЯМИ из settlements.json:
- * каждое — сущность-поселение (Settlement + Position) со стартовым складом ('inventory')
- * и кассой ('money') + смертный торговец-NPC (D-051). Склад/касса поселения ФИЗИЧЕСКИ
- * внесены из-за Периметра (D-021/D-045, БАЗЛАЙН t0 — worldgen НЕ эмитит леджер).
- * Поселения/торговцы генерируются ПОСЛЕДНИМИ (после стад), чтобы не сдвигать поток
- * rng Фазы 1 (сталкеры/стада тождественны прежним).
+ * Стартовая генерация мира (задача 1.3; расширена 2.2; рефактор 2.14a — D-059;
+ * ОЖИВЛЕНИЕ петель Фазы 2 — 2.16b, D-065). Рождение ОДНОГО человека вынесено в
+ * переиспользуемую `spawnStalker(world,rng,cfg)`: worldgen зовёт её в цикле (когорта
+ * 20), на торговцев, БАНДИТОВ и РЕЗИДЕНТОВ, а PopulationInflux (2.14/D-051, приток)
+ * позже — на новоприбывших. Вызывается РОВНО ОДИН РАЗ при сборке мира (headless-CLI),
+ * ДО первого тика планировщика. Населяет пустой `SimWorld`:
+ *   • сущность-мир (WorldClock singleton);
+ *   • 20 сталкеров-одиночек в Кордоне (фракция loners);
+ *   • стада животных в глубоких диких/руинных локациях;
+ *   • (2.2) ПОСЕЛЕНИЯ из settlements.json — сущность Settlement+Position со складом
+ *     ('inventory') и кассой ('money') + смертный торговец-NPC (D-051);
+ *   • (2.16b) АНОМАЛЬНЫЕ ПОЛЯ из anomaly_fields.json — сущность AnomalyField+Position
+ *     (charge=0, лут ПУСТ ⇒ базлайн не растёт; артефакты рождает ArtifactSpawn В
+ *     ПРОГОНЕ, D-054); БАНДИТЫ в отдельном логове (фракция bandits predatory ⇒ ROB,
+ *     D-062); по SETTLEMENT_RESIDENTS оседлых РЕЗИДЕНТОВ на поселение + разовый
+ *     `assignJobs` ⇒ census труда Economy > 0 ⇒ поселения ПРОИЗВОДЯТ (D-046).
+ * Склад/касса поселения и инвентарь/деньги людей ФИЗИЧЕСКИ внесены из-за Периметра
+ * (D-021/D-045, БАЗЛАЙН t0 — worldgen НЕ эмитит леджер). Все добавления Фазы 2
+ * генерируются ПОСЛЕДНИМИ (после стад/поселений — поля/бандиты/резиденты в КОНЦЕ
+ * потока rng), чтобы не сдвигать поток rng существующих сущностей: сталкеры/стада/
+ * поселения/торговцы БИТ-В-БИТ тождественны прежним (закреплено голден-тестом состава).
  *
  * ── Закон №1 (мир живёт без игрока) ──────────────────────────────────────────
  * Игрока НЕТ. Сталкеры расставляются в ENTRY_LOCATION (Кордон, D-025) — точке
@@ -69,12 +77,14 @@ import {
   Animal,
   WorldClock,
   Settlement,
+  AnomalyField,
   Human,
   Alive,
   WEATHER_CODE,
 } from './core/components';
-import { MAP, NAMES, getSpecies, getSettlements } from './data/index';
-import type { SettlementData } from '@zona/shared';
+import { MAP, NAMES, getSpecies, getSettlements, getAnomalyFields } from './data/index';
+import type { SettlementData, AnomalyFieldData } from '@zona/shared';
+import { assignJobs } from './systems/job-assign';
 import { HEALTH_MAX } from './balance/needs';
 import {
   STALKER_COUNT,
@@ -102,6 +112,12 @@ import {
   SETTLEMENT_START_MORALE,
   SETTLEMENT_START_SECURITY,
   TRADER_PROFESSION_ID,
+  BANDIT_COUNT,
+  BANDIT_FACTION_ID,
+  BANDIT_HAUNT_LOCATION,
+  BANDIT_PROFESSION_IDS,
+  SETTLEMENT_RESIDENTS,
+  RESIDENT_PROFESSION_IDS,
 } from './balance/worldgen';
 
 // ── Типизированные проекции SoA-колонок ──────────────────────────────────────
@@ -131,6 +147,7 @@ const SETTLE = Settlement as unknown as {
   buildTarget: Uint8Array;
   buildProgress: Float32Array;
 };
+const FIELD = AnomalyField as unknown as { charge: Float32Array; tier: Uint8Array };
 
 /** Запись имени сталкера в ResourceStore (D-007). first/last непусты (закон №4). */
 interface NameRecord {
@@ -285,6 +302,24 @@ export function worldgen(world: SimWorld): void {
   spawnStalkers(world, rng);
   spawnHerds(world, rng);
   spawnSettlements(world, rng);
+  // ── ОЖИВЛЕНИЕ ДРЕМЛЮЩИХ ПЕТЕЛЬ ФАЗЫ 2 (задача 2.16b, В КОНЕЦ потока rng) ─────
+  // Всё ниже дописано ПОСЛЕ spawnSettlements — как 2.2 дописала поселения в конец:
+  // существующие сталкеры/стада/поселения/торговцы БИТ-В-БИТ те же (их eid/имена/
+  // позиции/rng не сдвинуты). Порядок фиксирован: поля (без rng) → бандиты →
+  // резиденты → наём. Каждая группа рождает НОСИТЕЛЕЙ дремлющих систем (D-065):
+  //   • поля AnomalyField (charge=0, лут ПУСТ) ⇒ ArtifactSpawn/ArtifactSearch/Export;
+  //   • бандиты (фракция bandits predatory, D-062) ⇒ ROB/RobberyMemory/MemoryDecay;
+  //   • резиденты + assignJobs ⇒ census труда Economy > 0 ⇒ поселения ПРОИЗВОДЯТ.
+  spawnAnomalyFields(world);
+  spawnBandits(world, rng);
+  spawnResidents(world, rng);
+  // НАЁМ РАЗОВО (D-046/D-052): assignJobs — не система (в конвейер не входит), а
+  // расселение по рабочим местам в генезисе. Зовётся ПОСЛЕ всех резидентов/торговцев
+  // (иначе кого-то не увидит) и rng НЕ трогает (наём выводится из состояния, не из
+  // кости). Массу не двигает (Job — компонент-состояние ⇒ EconomyInvariant baseline
+  // не затронут, закон №3). employer/workplace выставляются СРАЗУ после addComponent
+  // (D-046 хвост — иначе ложная приписка к eid 0).
+  assignJobs(world);
 }
 
 // ── Сущность-мир: WorldClock singleton ───────────────────────────────────────
@@ -554,4 +589,105 @@ function spawnTrader(
     inventory: buildStartingInventory,
     usedNames,
   });
+}
+
+// ── Аномальные поля (Фаза 2, задача 2.16b, D-046/D-054/D-065) ─────────────────
+
+/**
+ * Материализует носители AnomalyField из anomaly_fields.json (закон №10 — поля это
+ * КОНТЕНТ). Для КАЖДОЙ записи (обход в порядке файла — детерминирован):
+ *  - сущность-поле: AnomalyField(`charge=0`, `tier` из данных) + Position(стоит на
+ *    своей loc, dest===loc — чтобы ArtifactSpawn/SEARCH могли локализовать поле).
+ *
+ * ── Закон №3 / ПУСТОЙ старт (базлайн EconomyInvariant не растёт) ─────────────
+ * Поле НЕ получает cold 'inventory' — наземный лут ПУСТ на t0 (в отличие от склада
+ * поселения, который есть базлайн-масса). Артефакты РОЖДАЕТ уже в прогоне ArtifactSpawn
+ * (2.9/D-054) с леджером item/harvested(source:'anomaly') — легальный источник массы.
+ * Поэтому worldTotals(t0) от полей не увеличивается, и assertEconomyInvariant НЕ
+ * бросает из-за них (проверено тестом «поля пусты»).
+ *
+ * rng НЕ используется (поле — не физиология и не разброс; заряд копит система). Поле —
+ * НЕ Alive/Human/Animal ⇒ инертно для акторных систем (как поселение), кроме того что
+ * несёт Position (пассивный контакт Perception — безвредно, как у поселения 2.2).
+ */
+function spawnAnomalyFields(world: SimWorld): void {
+  // getAnomalyFields() — список в порядке файла (детерминирован, закон №8).
+  for (const f of getAnomalyFields()) {
+    spawnAnomalyField(world, f);
+  }
+}
+
+/** Создаёт один носитель AnomalyField (charge=0, лут пуст) в локации поля `f`. */
+function spawnAnomalyField(world: SimWorld, f: AnomalyFieldData): void {
+  const eid = spawnEntity(world.ecs);
+
+  addComponent(world.ecs, AnomalyField, eid); // зануляет поля (D-024) ⇒ charge=0
+  FIELD.charge[eid] = 0; // явно: поле стартует РАЗРЯЖЕННЫМ (лут пуст, закон №3)
+  FIELD.tier[eid] = f.tier;
+
+  // Position: поле «стоит» на своей локации (dest===loc, D-019).
+  addComponent(world.ecs, Position, eid);
+  POS.loc[eid] = f.loc;
+  POS.dest[eid] = f.loc;
+  POS.etaTicks[eid] = 0;
+  // НЕТ cold 'inventory' и НЕТ 'money' — поле пусто на t0 (базлайн не растёт).
+}
+
+// ── Бандиты (Фаза 2, задача 2.16b, D-049/D-062/D-065) ────────────────────────
+
+/**
+ * Заселяет BANDIT_COUNT бандитов в ЛОГОВЕ (BANDIT_HAUNT_LOCATION — wild-локация
+ * ОТДЕЛЬНО от Кордона, чтобы не было бойни одиночек на t0). Каждый — обычный
+ * смертный сталкер (spawnStalker), кроме: фракция bandits (ХИЩНАЯ, predatory:true —
+ * активирует ROB, D-062), loc/home = логово, профессия — ПОЛЕВАЯ из BANDIT_PROFESSION_IDS
+ * (assignJobs Job им не даст). Инвентарь/деньги — БАЗЛАЙН t0 (STARTING_INVENTORY несёт
+ * ПМ+патроны — вооружены, иначе грабить нечем; STARTING_MONEY; D-021 «внесено из-за
+ * Периметра», НЕ приток item/broughtIn — это стартовая генерация). Task НЕ ставится
+ * (назначит TaskSelection, D-020). Общий Set имён — бандиты не дублируют полные имена
+ * МЕЖДУ собой (совпадение с одиночкой допустимо — однофамильцы, как у торговцев).
+ */
+function spawnBandits(world: SimWorld, rng: Rng): void {
+  const usedNames = new Set<string>();
+  for (let i = 0; i < BANDIT_COUNT; i++) {
+    spawnStalker(world, rng, {
+      loc: BANDIT_HAUNT_LOCATION as LocationId,
+      home: BANDIT_HAUNT_LOCATION as LocationId,
+      faction: BANDIT_FACTION_ID,
+      profession: { kind: 'pick', from: BANDIT_PROFESSION_IDS },
+      money: STARTING_MONEY,
+      inventory: buildStartingInventory,
+      usedNames,
+    });
+  }
+}
+
+// ── Резиденты поселений (Фаза 2, задача 2.16b, D-046/D-065) ───────────────────
+
+/**
+ * Селит SETTLEMENT_RESIDENTS оседлых резидентов на КАЖДОЕ поселение (Home = loc
+ * поселения, профессия ОСЕДЛАЯ из RESIDENT_PROFESSION_IDS — санитар/технарь, чей
+ * непустой workTasks Economy использует для производства). Обход поселений и
+ * резидентов детерминирован (порядок файла × индекс). Резиденты — обычные смертные
+ * сталкеры (spawnStalker), базлайн t0 (D-021). БЕЗ Task (TaskSelection, D-020) и БЕЗ
+ * Job здесь — Job навесит assignJobs (зовётся в worldgen ПОСЛЕ всех резидентов), тогда
+ * census труда Economy станет > 0 и поселение ЗАРАБОТАЕТ на производство (разворот
+ * находки QA-2.16a: без рук поселение только проедает upkeep). Общий Set имён — резиденты
+ * не дублируют полные имена между собой (совпадение с другими когортами допустимо).
+ */
+function spawnResidents(world: SimWorld, rng: Rng): void {
+  const usedNames = new Set<string>();
+  // getSettlements() — порядок файла (детерминирован, закон №8).
+  for (const s of getSettlements()) {
+    for (let i = 0; i < SETTLEMENT_RESIDENTS; i++) {
+      spawnStalker(world, rng, {
+        loc: s.loc as LocationId,
+        home: s.loc as LocationId,
+        faction: s.faction as FactionId,
+        profession: { kind: 'pick', from: RESIDENT_PROFESSION_IDS },
+        money: STARTING_MONEY,
+        inventory: buildStartingInventory,
+        usedNames,
+      });
+    }
+  }
 }

@@ -104,15 +104,16 @@ function isThreat(world: SystemCtx['world'], eid: EntityId): boolean {
  * (id событий переживают save/load, C-4). Нет — `null` (никого не двигало).
  */
 function spottedCause(bus: EventBus, observer: EntityId, target: EntityId): EventId | null {
-  const log = bus.log;
-  for (let i = log.length - 1; i >= 0; i--) {
-    const ev = log[i];
-    if (ev === undefined) continue;
-    if (ev.type !== 'move/departed' && ev.type !== 'move/arrived') continue;
-    const mover = (ev.payload as { readonly eid: EntityId }).eid;
-    if (mover === observer || mover === target) return ev.id;
-  }
-  return null;
+  // Reverse-поиск через bus.findLast БЕЗ КОПИИ лога (перф, 2.16b): прежний
+  // `const log = bus.log` копировал весь (растущий) лог на КАЖДЫЙ новый контакт
+  // каждый тик — O(тиков × лога) за прогон. Результат тождествен (свежайшее move).
+  const ev = bus.findLast(
+    (e) =>
+      (e.type === 'move/departed' || e.type === 'move/arrived') &&
+      ((e.payload as { readonly eid: EntityId }).eid === observer ||
+        (e.payload as { readonly eid: EntityId }).eid === target),
+  );
+  return ev === undefined ? null : ev.id;
 }
 
 /**

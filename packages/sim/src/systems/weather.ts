@@ -143,13 +143,11 @@ export function nextWeatherCode(worldRng: Rng, changeTick: Tick, fromCode: numbe
  * цепочка переживает save/load без разрыва.
  */
 function lastWeatherChange(bus: EventBus): EventId | null {
-  const log = bus.log;
-  for (let i = log.length - 1; i >= 0; i--) {
-    const ev = log[i];
-    if (ev === undefined) continue;
-    if (ev.type === WEATHER_CHANGED_TYPE) return ev.id;
-  }
-  return null;
+  // Reverse-поиск через bus.findLast БЕЗ КОПИИ лога (перф, 2.16b): прежний
+  // `const log = bus.log` копировал весь растущий лог каждые WEATHER_CADENCE тиков.
+  // Результат тождествен (свежайшее weather/changed = наибольший id).
+  const ev = bus.findLast((e) => e.type === WEATHER_CHANGED_TYPE);
+  return ev === undefined ? null : ev.id;
 }
 
 /**

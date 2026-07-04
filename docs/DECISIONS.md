@@ -1491,3 +1491,61 @@ cli.test.ts (голдены day1/day100), packages/sim/src/phase1-gate.test.ts (
 DAY1_SEED42, MUST-5 порядок), docs/diagrams/pipeline-2.16a.md. ХВОСТ 2.16b: оживление сущностей в worldgen
 (носители AnomalyField/поля, хищные фракции/бандиты, assignJobs) — тогда дремлющие 5 систем оживут и голдены
 сдвинутся ОЖИДАЕМО. НЕ трогал: сами системы (логика 2.x неизменна), worldgen, ядро/сериализацию, резолвер.
+
+## D-065 | Фаза 2 / задача 2.16b | 2026-07-04
+Решение (ОЖИВЛЕНИЕ дремлющих петель Фазы 2 в worldgen — генезис носителей + перф-разблокировка шины; второй
+под-шаг капстоуна 2.16). Конвейер Фазы 2 (17 систем) собран в 2.16a (D-064), но worldgen не создавал носителей
+для 5 дремлющих систем. 2.16b дописал их В КОНЕЦ потока rng worldgen (как 2.2 — поселения), поэтому существующие
+сталкеры/стада/поселения/торговцы БИТ-В-БИТ те же (их eid/имена/rng не сдвинуты; закреплено голден-тестом состава).
+1) АНОМАЛЬНЫЕ ПОЛЯ (носители ArtifactSpawn/ArtifactSearch/Export): новый КОНТЕНТ-файл `data/anomaly_fields.json`
+   `[{loc,tier}]` (закон №10; загрузчик+валидатор getAnomalyFields в data/index — тип локации wild/ruins через
+   ДАННЫЕ, D-025, не хардкод-id; tier целое>=0). 3 поля: Припять(loc8,ruins,danger0.7)tier2, Дикая
+   территория(loc4,wild,0.4)tier1, Свалка(loc1,ruins,0.25)tier0. Каждое: AnomalyField(charge=0)+Position, лут
+   ПУСТ (закон №3: поле НЕ несёт стартовой массы — базлайн EconomyInvariant НЕ растёт; артефакты рождает
+   ArtifactSpawn В ПРОГОНЕ через item/harvested(source:'anomaly'), D-054). rng не тратят.
+2) БАНДИТЫ (носители ROB/RobberyMemory/MemoryDecay): BANDIT_COUNT=4 в ЛОГОВЕ BANDIT_HAUNT_LOCATION=3 (Тёмная
+   долина, wild, ОТДЕЛЬНО от Кордона — иначе бойня одиночек на t0). spawnStalker(faction=bandits predatory,
+   D-062 ⇒ активирует ROB; профессия полевая из BANDIT_PROFESSION_IDS ⇒ Job не получают). Инвентарь/деньги —
+   БАЗЛАЙН t0 «как сталкер» (STARTING_INVENTORY несёт ПМ+патроны — вооружены, иначе power 0 и грабить нечем;
+   D-021, НЕ приток item/broughtIn).
+3) РЕЗИДЕНТЫ + НАЁМ (оживляют Economy): SETTLEMENT_RESIDENTS=2 на поселение через spawnStalker(home=loc
+   поселения, оседлая профессия RESIDENT_PROFESSION_IDS=medic/mechanic, непустой workTasks). Затем РАЗОВЫЙ
+   `assignJobs(world)` в конце worldgen (после ВСЕХ резидентов/торговцев) ⇒ Job резидентам/торговцам ⇒ census
+   труда Economy > 0 ⇒ поселения ПРОИЗВОДЯТ (разворот находки QA-2.16a: без рук поселение только проедает
+   upkeep и покидается за ~30 дней). assignJobs выставляет employer/workplace СРАЗУ после addComponent (D-046
+   хвост — иначе ложная приписка к eid 0); массу не двигает (Job — состояние, не предмет ⇒ EconomyInvariant цел).
+   Числа генезиса ≈30 людей (20 loners+4 бандита+4 резидента+2 торговца) — не перенаселить, не геноцид.
+4) ПЕРФ-РАЗБЛОКИРОВКА ШИНЫ (обязательна: плотный лог Фазы 2 вскрыл латентный КВАДРАТ O(тиков×лога)). RobberyMemory
+   зовёт `bus.at(tick−1)` КАЖДЫЙ тик, Perception/Weather/Death reverse-сканируют весь лог (`const log=bus.log` —
+   ПОЛНАЯ КОПИЯ), PopulationInflux сканирует окно по всему логу. При логе ~800k событий 100-дневный прогон
+   деградировал до 587с. Фиксы РЕЗУЛЬТАТ-ТОЖДЕСТВЕННЫ (хэши day10/20/40/100 идентичны до/после — перф не меняет
+   мир, D-006): (а) core/events — ИНДЕКС byTick (`at` O(событий тика), копия одного тика ради контракта
+   иммутабельности) + `findLast(pred)` (reverse-скан внутреннего лога без копии); (б) Perception.spottedCause/
+   Weather.lastWeatherChange/Death.deriveCause → bus.findLast (без копии лога); (в) PopulationInflux.
+   computeAttractiveness → обход окна через bus.at по тикам (O(событий окна)). Итог: 100 дней 587с → ~70с.
+   ОСТАЁТСЯ (для core-engineer, за рамками 2.16b): reverse-скан «последнего события» для СТАЦИОНАРНЫХ сущностей
+   (поселение/поле как контакт Perception — move-события нет ⇒ полный скан лога на КАЖДЫЙ новый такой контакт);
+   истинная O(1) требует per-entity/per-type индекса «последнего события».
+5) ГОЛДЕНЫ СДВИНУЛИСЬ ЗАКОННО (петли ожили: артефакты рождаются/собираются, бандиты грабят, наём производит,
+   приток компаундится): day1 seed42 `675e1485 → 1d52f17d` (events 11170 → 18829); day100 sim:100days
+   `626a8329 → 2fa78c11` (events 91655 → 798784). Хэш стабилен 2× (детерминизм, закон №8). ПУСТОЙ мир `481914ae`
+   ЦЕЛ (worldgen на пустом не зовётся; core-голден от serialize пустого мира). EconomyInvariant (D-045) держится
+   ВЕСЬ 100-дневный прогон (runHeadless сверяет массу с леджером раз в игровой день и НЕ бросает) — поля пусты,
+   бандиты/резиденты базлайн, наём массу не двигает, артефакты через леджер (закон №3).
+Альтернативы: (а) поле с базовым лутом на t0 — ОТКЛОНЕНО (вырастил бы baseline EconomyInvariant; артефакт обязан
+рождаться леджером в прогоне, D-054); (б) логово бандитов в Кордоне — ОТКЛОНЕНО (4 хищника vs 20 одиночек =
+бойня t0); (в) assignJobs как система в конвейере — ОТКЛОНЕНО (разовое расселение генезиса, не тик-логика, D-064);
+(г) просто поднять таймаут теста вместо перф-фикса — ОТКЛОНЕНО (587с тест нежизнеспособен; квадрат — реальный
+дефект, вскрытый плотностью). ОТЧЁТ ЗДОРОВЬЯ 30 дней (3 seed, информационно для 2.16c): люди 30→15-19 (стабильно,
+не коллапс/не взрыв); животные 33-37→0 (перевыбивание охотой — приоритет 2.16c); artifact spawned 2.1/день +
+collected 1.4/день (петля жива); trade 1.2-1.4/день; population/arrived ~50 (приток пошёл); грабежи 2-4
+loot/transferred; settlement/abandoned 1 из 2 (одно выживает, одно гибнет — балансировать 2.16c); item/exported=0
+(экспорт-кран СУХ: собранные артефакты не доходят до склада поселения — цепь SEARCH→несёт→продаёт артефакт
+поселению не замыкается за 30 дней; звено для 2.16c/economy-engineer). Проверка: typecheck exit 0; npm run test
+зелёный; sim:100days `2fa78c11` стабилен 2× ~70с без ошибок EconomyInvariant. Затрагивает: shared/data.ts
+(+AnomalyFieldData), sim/data/anomaly_fields.json (новый) + data/index.ts (загрузчик/валидатор/getAnomalyFields),
+sim/balance/worldgen.ts (BANDIT_*/SETTLEMENT_RESIDENTS/RESIDENT_PROFESSION_IDS), sim/worldgen.ts (spawnAnomalyFields/
+spawnBandits/spawnResidents/assignJobs + docblock), sim/core/events.ts (byTick+findLast), sim/systems/
+{perception,weather,death,population-influx}.ts (перф), worldgen.test.ts/cli.test.ts/phase1-gate.test.ts (голдены/
+состав), docs/diagrams/worldgen-2.16b.md. НЕ трогал: логику систем Фазы 2 (только их вызовы шины), сериализацию,
+resolver, порядок конвейера (D-064).

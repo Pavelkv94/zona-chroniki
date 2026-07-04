@@ -237,6 +237,31 @@ export interface SettlementsData {
 }
 
 /**
+ * Запись аномального поля-НОСИТЕЛЯ (`anomaly_fields.json`, Фаза 2, задача 2.16b,
+ * закон №10 — аномальные поля это КОНТЕНТ, а не хардкод-id в коде). `loc` — id
+ * локации, где стоит поле (валидатор требует `map.locations[loc].type ∈ {wild,
+ * ruins}` — аномалии живут в глубокой Зоне, D-025, выражено через ДАННЫЕ-тип
+ * локации, а не через хардкод конкретной локации). `tier` — ступень поля
+ * (`AnomalyField.tier`, D-054): целое >=0, отображается в ценность рождаемого
+ * артефакта через `getArtifactForTier`.
+ *
+ * ── Закон №3: поле стартует ПУСТЫМ ─────────────────────────────────────────
+ * Поле НЕ несёт стартовой массы (в отличие от склада поселения): `charge=0`,
+ * наземный лут пуст. Артефакты РОЖДАЮТСЯ уже В ПРОГОНЕ системой ArtifactSpawn
+ * (2.9/D-054) с леджером `item/harvested(source:'anomaly')` — легальный источник
+ * массы. Поэтому базлайн EconomyInvariant (t0) от полей НЕ растёт.
+ */
+export interface AnomalyFieldData {
+  readonly loc: number;
+  readonly tier: number;
+}
+
+/** Корневая структура `anomaly_fields.json` (закон №10). */
+export interface AnomalyFieldsData {
+  readonly fields: readonly AnomalyFieldData[];
+}
+
+/**
  * Запись профессии (`professions.json`, закон №10). `id` — абстрактная ссылка
  * (worldgen присваивает сталкеру по id), `name` — читаемое имя. Влияние профессии
  * на утилити-веса задач — забота TaskSelection (1.8); здесь лишь контент-запись.

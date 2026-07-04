@@ -51,8 +51,9 @@
  * сортируются по itemId. Два прогона на одном seed → идентичный лог смертей.
  */
 
-import type { EntityId, EventId, ItemId, LocationId, SimEvent } from '@zona/shared';
+import type { EntityId, EventId, ItemId, LocationId } from '@zona/shared';
 import type { System, SystemCtx } from '../core/system';
+import type { EventBus } from '../core/events';
 import { queryEntities, hasComponent, removeComponent, addComponent } from '../core/ecs';
 import { Position, Health, Needs, Task, Animal, Alive, Corpse } from '../core/components';
 
@@ -86,31 +87,17 @@ function causeOrNull(id: number): EventId | null {
 }
 
 /**
- * Находит событие с заданным `id` в committed-логе БИНАРНЫМ поиском (лог сорт. по
- * id по возрастанию; id монотонны, но с возможными пропусками от discardTick, C-4).
- * Возвращает событие или `undefined`, если оно не зафиксировано (пропуск/буфер).
- */
-function findEventById(log: readonly SimEvent[], id: number): SimEvent | undefined {
-  let lo = 0;
-  let hi = log.length - 1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    const ev = log[mid] as SimEvent;
-    if (ev.id === id) return ev;
-    if (ev.id < id) lo = mid + 1;
-    else hi = mid - 1;
-  }
-  return undefined;
-}
-
-/**
  * Выводит метку `cause` из `lethalCause` (id причины). Читает committed-лог по id
  * (см. docblock): найденный тип → метка; не найдено при ненулевом id ⇒ причина
  * опубликована в этом тике (Фаза 1: только Encounters) ⇒ 'combat'; 0 → 'unknown'.
  */
-function deriveCause(log: readonly SimEvent[], lethalCause: number): DeathCause {
+function deriveCause(bus: EventBus, lethalCause: number): DeathCause {
   if (lethalCause === 0) return 'unknown';
-  const ev = findEventById(log, lethalCause);
+  // Reverse-поиск события-причины по id через bus.findLast БЕЗ КОПИИ лога (перф,
+  // 2.16b): lethalCause свежий (урон только что добил), скан с конца находит его
+  // быстро. Прежний `const log = bus.log` + бинпоиск копировал весь растущий лог на
+  // каждый тик со смертью. Результат тождествен (то же событие по уникальному id).
+  const ev = bus.findLast((e) => e.id === lethalCause);
   if (ev === undefined) return 'combat'; // внутритиковый штамп → бой (Фаза 1)
   if (ev.type === 'encounter/resolved') return 'combat';
   if (ev.type === 'needs/threshold') {
@@ -157,15 +144,12 @@ export const Death: System = {
     }
     if (dying.length === 0) return;
 
-    // committed-лог для вывода метки cause (снимаем КОПИЮ раз на тик — смерть редка,
-    // но несколько одновременных смертей не должны копировать лог на каждую).
-    const log = bus.log;
-
     for (const eid of dying) {
-      // ПРИЧИНА: наследуем из lethalCause (0 → null). Метку выводим из типа события.
+      // ПРИЧИНА: наследуем из lethalCause (0 → null). Метку выводим из типа события
+      // через bus.findLast (reverse-поиск по id без копии лога, перф 2.16b).
       const lethalCause = HP.lethalCause[eid] as number;
       const causedBy = causeOrNull(lethalCause);
-      const cause = deriveCause(log, lethalCause);
+      const cause = deriveCause(bus, lethalCause);
 
       // ИМЯ (закон №4): у человека — есть; у животного записи 'name' нет → опустим.
       const name = fullName(world.resources.get<NameRecord>(NAME_KEY, eid));
