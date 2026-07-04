@@ -181,3 +181,23 @@ export type { Attractiveness } from './systems/population-influx';
 // 'money'/'inventory'). Позовут Chronicle 3.2 (порог значимости → запись летописи) и
 // Radio 3.5 (окраска эфира), они же поднимут fame упомянутым сущностям.
 export { significance, getFame, incFame, FAME_KEY } from './narrative/significance';
+
+// Рендер радио-сообщений (3.4, D-069): ЧИСТЫЙ headless-форматтер — из templateId+params
+// собирает plain-строку, читая пул шаблонов из /sim/data/messages.json (закон №10, закон
+// №5 — text, не DOM). НЕ система, НЕ в конвейере (worldgen/тик не трогает ⇒ голдены Фазы 3
+// не сдвигаются; EconomyInvariant не затронут). Radio (3.5) сделает seeded-выбор templateId
+// и позовёт renderMessage; Rumors (3.6) исказит params/выбор. MESSAGES/getTemplate — доступ
+// к пулу для seeded-выбора в 3.5.
+export {
+  renderMessage,
+  makeTemplateId,
+  parseTemplateId,
+} from './narrative/render';
+export type {
+  MessageEntry,
+  MessageParams,
+  RenderContext,
+  ParsedTemplateId,
+} from './narrative/render';
+export { MESSAGES, getTemplate, getTemplatePool } from './data/index';
+export type { MessagesData, MessageTemperament } from '@zona/shared';

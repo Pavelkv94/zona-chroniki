@@ -36,6 +36,7 @@ import type {
   FactionRelation,
   ProfessionData,
   NamesData,
+  MessagesData,
   SettlementData,
   AnomalyFieldData,
 } from '@zona/shared';
@@ -48,6 +49,7 @@ import factionsRaw from './factions.json';
 import professionsRaw from './professions.json';
 import settlementsRaw from './settlements.json';
 import anomalyFieldsRaw from './anomaly_fields.json';
+import messagesRaw from './messages.json';
 
 /** Ошибка валидации/связности контента. Бросается при загрузке модуля. */
 export class DataError extends Error {
@@ -450,6 +452,118 @@ function validateNames(data: unknown): NamesData {
   return n;
 }
 
+// ── Валидация радио-шаблонов (закон №10, задача 3.4, D-069) ──────────────────
+
+/**
+ * Разрешённые ПЛЕЙСХОЛДЕРЫ шаблонов сообщений. `renderMessage` подставляет их из
+ * `params`/`ctx`; любой иной токен `{...}` в контенте — опечатка (напр. `{loc }`,
+ * `{name}`), которая молча осталась бы в эфире неразобранной. Держим набор ДАННЫМИ
+ * рядом с валидатором (единый источник правды для рендера — см. `narrative/render`).
+ */
+const VALID_PLACEHOLDERS = new Set(['speaker', 'subject', 'loc', 'count', 'item']);
+
+/** Извлекает имена всех плейсхолдеров `{name}` из строки шаблона. */
+const PLACEHOLDER_RE = /\{([^{}]*)\}/g;
+
+/**
+ * Обязательный БАЗОВЫЙ темперамент — фолбэк рендера. Каждый тип события ОБЯЗАН
+ * иметь непустой пул под этим кодом (`narrative/render` откатывается на него,
+ * если у события нет пула под темперамент говорящего).
+ */
+const FALLBACK_TEMPERAMENT = 'neutral';
+
+/** Минимум шаблонов на ТИП события (GDD §8.3: пул 15–25, чтобы эфир не робел). */
+const MIN_TEMPLATES_PER_EVENT = 15;
+
+/**
+ * Валидирует `messages.json` (задача 3.4, закон №10 — контент радио в данных, D-069).
+ * Fail-fast на кривом контенте, чтобы битый шаблон не всплыл строкой-мусором в
+ * эфире рантайма. Проверяет:
+ *  - `version` — положительное целое; `temperaments` — непустой список непустых
+ *    уникальных строк, СОДЕРЖИТ базовый `'neutral'` (фолбэк рендера);
+ *  - `templates` — непустой объект; каждый ТИП события несёт непустой пул под
+ *    `'neutral'` (фолбэк обязателен) и в сумме по темпераментам >= 15 шаблонов
+ *    (GDD §8.3 — против роботизированного эфира);
+ *  - каждый ключ-темперамент объявлен в `temperaments`; каждый пул — непустой
+ *    массив непустых строк;
+ *  - шаблоны — ТОЛЬКО текст+валидные плейсхолдеры: неизвестный `{...}` → throw;
+ *    любой символ разметки `<`/`>` → throw (закон №5: сообщение = plain-строка,
+ *    НЕ DOM/HTML; рендер отдаёт текст, стиль — забота UI Фазы 4).
+ */
+function validateMessages(data: unknown): MessagesData {
+  assert(data !== null && typeof data === 'object', 'messages.json: не объект');
+  const m = data as { version?: unknown; temperaments?: unknown; templates?: unknown };
+  assert(
+    Number.isInteger(m.version) && (m.version as number) > 0,
+    'messages.json: version должен быть целым >0',
+  );
+  assert(Array.isArray(m.temperaments), 'messages.json: temperaments должен быть массивом');
+  const temperaments = m.temperaments as string[];
+  assert(temperaments.length > 0, 'messages.json: temperaments пуст');
+  const tempSet = new Set<string>();
+  temperaments.forEach((t, i) => {
+    assert(typeof t === 'string' && t.length > 0, `messages.json: temperaments[${i}] пуст`);
+    assert(!tempSet.has(t), `messages.json: дублирующийся темперамент "${t}"`);
+    tempSet.add(t);
+  });
+  assert(
+    tempSet.has(FALLBACK_TEMPERAMENT),
+    `messages.json: в temperaments нет обязательного фолбэка "${FALLBACK_TEMPERAMENT}"`,
+  );
+
+  assert(m.templates !== null && typeof m.templates === 'object', 'messages.json: нет templates');
+  const templates = m.templates as Record<string, Record<string, unknown>>;
+  // Детерминированный обход ключей (закон №8): сортируем перед итерацией. На состояние
+  // мира не влияет (загрузка), но держим порядок сообщений об ошибке стабильным.
+  const eventTypes = Object.keys(templates).sort();
+  assert(eventTypes.length > 0, 'messages.json: templates пуст (нет типов событий)');
+
+  for (const evt of eventTypes) {
+    const byTemp = templates[evt];
+    assert(byTemp !== null && typeof byTemp === 'object', `messages.json[${evt}]: не объект`);
+    const temps = Object.keys(byTemp).sort();
+    assert(temps.length > 0, `messages.json[${evt}]: нет ни одного пула темперамента`);
+    // Фолбэк обязателен (рендер откатывается на 'neutral').
+    assert(
+      temps.includes(FALLBACK_TEMPERAMENT),
+      `messages.json[${evt}]: нет обязательного пула "${FALLBACK_TEMPERAMENT}"`,
+    );
+    let total = 0;
+    for (const temp of temps) {
+      assert(tempSet.has(temp), `messages.json[${evt}]: темперамент "${temp}" не объявлен в temperaments`);
+      const pool = (byTemp as Record<string, unknown>)[temp];
+      assert(Array.isArray(pool) && pool.length > 0, `messages.json[${evt}][${temp}]: пул пуст`);
+      (pool as unknown[]).forEach((tpl, i) => {
+        assert(
+          typeof tpl === 'string' && tpl.length > 0,
+          `messages.json[${evt}][${temp}][${i}]: шаблон пуст/не строка`,
+        );
+        const s = tpl as string;
+        // Закон №5: никакой разметки — только текст+плейсхолдеры.
+        assert(
+          !s.includes('<') && !s.includes('>'),
+          `messages.json[${evt}][${temp}][${i}]: разметка/HTML запрещена (символ '<'/'>')`,
+        );
+        // Плейсхолдеры — только из известного набора.
+        for (const match of s.matchAll(PLACEHOLDER_RE)) {
+          const name = match[1] ?? '';
+          assert(
+            VALID_PLACEHOLDERS.has(name),
+            `messages.json[${evt}][${temp}][${i}]: неизвестный плейсхолдер "{${name}}"`,
+          );
+        }
+        total += 1;
+      });
+    }
+    assert(
+      total >= MIN_TEMPLATES_PER_EVENT,
+      `messages.json[${evt}]: ${total} шаблонов < минимума ${MIN_TEMPLATES_PER_EVENT} (GDD §8.3)`,
+    );
+  }
+
+  return m as MessagesData;
+}
+
 // ── Загрузка (единожды на модуль) ───────────────────────────────────────────
 
 /** Валидированная и замороженная карта Зоны. */
@@ -463,6 +577,13 @@ export const SPECIES: readonly SpeciesData[] = deepFreeze(validateSpecies(specie
 
 /** Валидированный и замороженный пул имён. */
 export const NAMES: NamesData = deepFreeze(validateNames(namesRaw));
+
+/**
+ * Валидированный и замороженный пул радио-шаблонов (задача 3.4, закон №10, D-069).
+ * Читается ЧИСТЫМ рендером `narrative/render.ts` (из templateId+params собирает
+ * plain-строку); в тик симуляции не входит — Radio (3.5) подключит выбор шаблона.
+ */
+export const MESSAGES: MessagesData = deepFreeze(validateMessages(messagesRaw));
 
 /**
  * Валидированный и замороженный список фракций (контент, закон №10). Поверх общей
@@ -698,6 +819,26 @@ export function getRelation(a: string, b: string): number {
   assert(FACTION_BY_ID.has(b), `getRelation: неизвестная фракция "${b}"`);
   if (a === b) return RELATION_MAX;
   return RELATION_BY_PAIR.get(relationKey(a, b)) ?? 0;
+}
+
+/**
+ * Пул шаблонов события `eventType` под темперамент `temperament` (задача 3.4).
+ * Возвращает `undefined`, если такого типа события или темперамента нет в контенте
+ * (рендер решает фолбэк — на `'neutral'` и/или служебную строку помех). НЕ бросает:
+ * неизвестный templateId в рантайме — это баг вызывающей стороны (3.5), а не
+ * фатальная порча контента (её ловит `validateMessages` при загрузке).
+ */
+export function getTemplatePool(eventType: string, temperament: string): readonly string[] | undefined {
+  return MESSAGES.templates[eventType]?.[temperament];
+}
+
+/**
+ * Конкретный шаблон `(eventType, temperament, index)` (задача 3.4). `undefined`,
+ * если пул отсутствует или индекс вне диапазона. Детерминирован (индексация, без
+ * итерации по Map/Set — закон №8).
+ */
+export function getTemplate(eventType: string, temperament: string, index: number): string | undefined {
+  return getTemplatePool(eventType, temperament)?.[index];
 }
 
 /**

@@ -48,6 +48,8 @@ export type {
   ProfessionData,
   NicknamePattern,
   NamesData,
+  MessageTemperament,
+  MessagesData,
   SettlementItemQty,
   SettlementRecipe,
   SettlementConsumption,
