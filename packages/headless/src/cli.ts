@@ -16,10 +16,17 @@
  * «Тиков в дне» — балансовая константа `TICKS_PER_DAY` из `@zona/sim/balance`,
  * а не магическое число 1440 в коде CLI.
  *
- * ── Фаза 0 ───────────────────────────────────────────────────────────────────
- * Реальных систем ещё нет: планировщик создаётся пустым и прогоняет пустые тики.
- * Это ок — CLI прогоняет ядро (rng/шина/мир существуют) и печатает воспроизводимый
- * хэш. Настоящие системы регистрируются в следующих фазах.
+ * ── Фаза 1 (1.12): ЖИВОЙ МИР ─────────────────────────────────────────────────
+ * Теперь CLI собирает НАСТОЯЩИЙ прогон: `createSimWorld(seed)` → `worldgen`
+ * (заселение) → `registerPhase1Systems` (все 9 систем в каноническом порядке,
+ * D-032) → `scheduler.run`. Лог больше НЕ пуст (`events > 0`), хэш — хэш живого
+ * мира. Порядок систем — единственный источник детерминизма причинности; он
+ * фиксирован в `@zona/sim/pipeline`, CLI лишь оркестрирует.
+ *
+ * ── Флаг `--log verbose` (ПРЕЗЕНТАЦИЯ, D-006) ────────────────────────────────
+ * Печатает человекочитаемую хронику по логу ПОСЛЕ прогона (render.ts). Это
+ * чистое чтение финального мира: хэш с `--log verbose` и без ОБЯЗАН совпасть,
+ * как и с `--metrics` (мир не зависит от вывода). Дефолт — `none` (только хэш).
  */
 
 import { realpathSync } from 'node:fs';
@@ -28,10 +35,17 @@ import { fileURLToPath } from 'node:url';
 import {
   createSimWorld,
   createScheduler,
+  registerPhase1Systems,
+  worldgen,
   serialize,
   hashSnapshot,
   TICKS_PER_DAY,
+  type SimWorld,
 } from '@zona/sim';
+import { renderEventLog } from './render';
+
+/** Режим печати лога событий (ПРЕЗЕНТАЦИЯ, D-006 — не влияет на мир/хэш). */
+export type LogMode = 'none' | 'verbose';
 
 /** Разобранные опции командной строки. */
 export interface CliOptions {
@@ -41,10 +55,16 @@ export interface CliOptions {
   seed: number;
   /** Печатать ли метрики (events, ms) помимо хэша. НЕ влияет на состояние мира. */
   metrics: boolean;
+  /**
+   * Режим рендера лога: `none` (по умолчанию — только хэш) или `verbose`
+   * (человекочитаемая хроника). ЧИСТАЯ презентация: хэш от режима НЕ зависит
+   * (инвариант D-006, как `metrics`).
+   */
+  logMode: LogMode;
 }
 
-/** Дефолты опций: один день, seed 42, без метрик. */
-const DEFAULT_OPTIONS: CliOptions = { days: 1, seed: 42, metrics: false };
+/** Дефолты опций: один день, seed 42, без метрик, без хроники. */
+const DEFAULT_OPTIONS: CliOptions = { days: 1, seed: 42, metrics: false, logMode: 'none' };
 
 /** Верхняя граница uint32 для seed (включительно). */
 const UINT32_MAX = 0xffffffff;
@@ -87,10 +107,20 @@ export function parseArgs(argv: readonly string[]): CliOptions {
         opts.metrics = true;
         break;
       }
+      case '--log': {
+        const mode = argv[++i];
+        if (mode !== 'none' && mode !== 'verbose') {
+          throw new RangeError(
+            `CLI: --log ожидает "none" или "verbose", получено "${mode ?? ''}".`,
+          );
+        }
+        opts.logMode = mode;
+        break;
+      }
       default:
         throw new RangeError(
           `CLI: неизвестный аргумент "${arg}". Допустимо: ` +
-            `--days <N>, --seed <N>, --metrics.`,
+            `--days <N>, --seed <N>, --metrics, --log <none|verbose>.`,
         );
     }
   }
@@ -131,17 +161,37 @@ export interface RunResult {
   events: number;
   /** Длительность `scheduler.run` в миллисекундах (D-006: НЕ в хэше). */
   ms: number;
+  /**
+   * Человекочитаемая хроника (строки), если `opts.logMode === 'verbose'`, иначе
+   * `undefined`. Чистая ПРЕЗЕНТАЦИЯ: строится ЧТЕНИЕМ финального мира ПОСЛЕ хэша
+   * и на хэш не влияет (D-006).
+   */
+  logLines?: readonly string[];
 }
 
 /**
- * Прогоняет ядро на `days * TICKS_PER_DAY` тиков и возвращает хэш снапшота.
+ * Собирает ЖИВОЙ мир Фазы 1: пустой `SimWorld(seed)` → `worldgen` (заселение
+ * сталкерами/животными/часами) → планировщик со всеми системами в каноническом
+ * порядке (`registerPhase1Systems`, инвариант D-032). Вынесено, чтобы прогон и
+ * resume-тесты собирали конвейер ОДНИМ способом (порядок систем — единый).
+ */
+function buildWorld(seed: number): { world: SimWorld; scheduler: ReturnType<typeof createScheduler> } {
+  const world = createSimWorld(seed);
+  worldgen(world); // ДО первого тика: населяем Зону (1.3)
+  const scheduler = createScheduler();
+  registerPhase1Systems(scheduler); // все 9 систем, канон B.1/D-032
+  return { world, scheduler };
+}
+
+/**
+ * Прогоняет ЖИВОЙ мир на `days * TICKS_PER_DAY` тиков и возвращает хэш снапшота.
  * Замер `ms` окружает ТОЛЬКО `scheduler.run` (D-006) и не попадает в мир/хэш.
  * `metrics` тут не читается: он влияет лишь на печать в {@link main}; сам прогон
- * от него не зависит (инвариант D-006).
+ * от него не зависит (инвариант D-006). Хроника (`logLines`) строится ПОСЛЕ хэша
+ * ЧТЕНИЕМ мира — тоже вне хэша (презентация, D-006).
  */
 export function runHeadless(opts: CliOptions): RunResult {
-  const world = createSimWorld(opts.seed);
-  const scheduler = createScheduler(); // Фаза 0: систем нет — пустые тики.
+  const { world, scheduler } = buildWorld(opts.seed);
   const ticks = opts.days * TICKS_PER_DAY;
 
   const start = performance.now();
@@ -149,11 +199,17 @@ export function runHeadless(opts: CliOptions): RunResult {
   const ms = performance.now() - start;
 
   const snap = serialize(world);
-  return {
+  const result: RunResult = {
     snapshotHash: hashSnapshot(snap),
     events: snap.eventLog.length,
     ms,
   };
+  // Рендер — чистое чтение уже зафиксированного мира (после serialize/hash),
+  // поэтому на хэш не влияет (D-006). Строим только по запросу (verbose).
+  if (opts.logMode === 'verbose') {
+    result.logLines = renderEventLog(world);
+  }
+  return result;
 }
 
 /**
@@ -164,6 +220,11 @@ export function runHeadless(opts: CliOptions): RunResult {
 export function main(argv: readonly string[]): void {
   const opts = parseArgs(argv);
   const result = runHeadless(opts);
+  // Хроника (verbose) печатается ПЕРВОЙ — как читаемый лог событий мира, затем
+  // идёт машинная сводка/хэш. Презентация не влияет на хэш (D-006).
+  if (result.logLines !== undefined) {
+    for (const line of result.logLines) console.log(line);
+  }
   if (opts.metrics) {
     console.log(`hash=${result.snapshotHash}`);
     console.log(`events=${result.events}`);

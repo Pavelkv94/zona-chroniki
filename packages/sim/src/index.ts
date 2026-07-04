@@ -64,3 +64,21 @@ export { TICKS_PER_DAY } from './balance/time';
 // Стартовая генерация мира (1.3). Вызывается ОДИН раз при сборке мира (CLI 1.12)
 // до первого тика: населяет пустой SimWorld сталкерами/животными/часами мира.
 export { worldgen } from './worldgen';
+
+// Сборка конвейера Фазы 1 (1.12). Регистрирует все системы в каноническом
+// порядке (инвариант D-032). CLI собирает живой мир через неё, не перечисляя
+// системы вручную. `PHASE1_SYSTEMS` — тот же список данными для теста порядка.
+export { registerPhase1Systems, PHASE1_SYSTEMS } from './pipeline';
+
+// ── Презентационные справочники (1.12, D-006) ────────────────────────────────
+// Реэкспорт для ЧЕЛОВЕКОЧИТАЕМОГО рендера лога в headless (флаг --log verbose):
+// имя локации, вид животного, коды задач/погоды → русские подписи. Это ЧТЕНИЕ
+// контента (закон №10), рендер живёт в headless и мир НЕ трогает (D-006). Сам
+// перечень видов/локаций — данные (/sim/data), коды — стабильное пространство.
+export { getLocation, getSpecies } from './data/index';
+export { WEATHER_TYPES } from './balance/weather';
+export type { WeatherType } from './balance/weather';
+export { TaskKind } from './core/components';
+
+// Сериализация read-path для resume-прогонов CLI (save/load через весь конвейер).
+export type { SimEvent } from '@zona/shared';
