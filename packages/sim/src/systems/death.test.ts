@@ -477,7 +477,7 @@ describe('Death: жаждущая смерть (Needs→Death, cause=thirst)', (
 describe('Death: боевая смерть ЧЕЛОВЕКА (кабан убил охотника, цепочка combat)', () => {
   it('внутритиковый [Encounters, Death]: безоружный подранок vs кабан → человек-труп, died(combat), имя+лут целы', () => {
     const w = createSimWorld(77 as Seed);
-    const boar = placeAnimal(w, BOAR, LOC); // кабан: power 8, melee 14 — убивает с одного удара
+    const boar = placeAnimal(w, BOAR, LOC); // кабан: power 8, melee 8 — добивает подранка (hp=1)
     // Охотник почти мёртв и БЕЗ ОРУЖИЯ (в инвентаре только лут): кабан гарантированно добивает.
     const hunter = placeHunter(w, LOC, boar);
     HP.hp[hunter] = 1;

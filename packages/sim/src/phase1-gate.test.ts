@@ -45,8 +45,12 @@ import { edgeLen, SPECIES } from './data/index';
 const GATE_DAYS = 10; // горизонт DoD Фазы 1
 const GATE_TICKS = GATE_DAYS * TICKS_PER_DAY;
 const SEEDS = [42, 7, 999] as const;
-/** День-1/seed-42 живой голден (D-042). Сборка мира тем же путём обязана дать его. */
-const GOLDEN_DAY1_SEED42 = 'e04c0d77';
+/**
+ * День-1/seed-42 живой голден (D-042). Сборка мира тем же путём обязана дать его.
+ * Пере-закреплён balance-analyst-сессией (Фаза 1, смягчение спирали смерти):
+ * e04c0d77 → 8a8faff4 (см. docs/reports/phase1-balance.md).
+ */
+const GOLDEN_DAY1_SEED42 = '8a8faff4';
 /** Максимальный выход мяса с одной туши среди видов — верхняя граница «мясо с туш». */
 const MAX_MEAT_YIELD = Math.max(...SPECIES.map((s) => s.meatYield));
 
@@ -497,7 +501,7 @@ describe('MUST · Закон №3: охота даёт мясо, ничего н
 // MUST-8 — ЦЕЛОСТНОСТЬ: живой прогон не падает и воспроизводит день-1 голден.
 // ═════════════════════════════════════════════════════════════════════════════
 describe('MUST · Целостность: конвейер не падает и держит живой голден', () => {
-  it('день-1/seed-42 через тот же путь сборки даёт голден e04c0d77 (D-042)', () => {
+  it('день-1/seed-42 через тот же путь сборки даёт голден 8a8faff4 (D-042)', () => {
     const { world, scheduler } = buildLive(42);
     scheduler.run(world, TICKS_PER_DAY);
     expect(hashSnapshot(serialize(world))).toBe(GOLDEN_DAY1_SEED42);

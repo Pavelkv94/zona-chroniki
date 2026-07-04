@@ -525,7 +525,10 @@ describe('resume-безопасность детекции порога (P0 де
   it('split save/load ДО пересечения ≡ непрерывный прогон (хэш мира и лог порогов идентичны)', () => {
     // Нужды стартуют НИЖЕ порогов, пересечения случаются ПОСЛЕ точки сплита —
     // проверяем, что само пересечение переживает resume побитово.
-    const vitals = { hunger: 70, thirst: 60, fatigue: 40, fear: 100, hp: 100 };
+    // thirst стартует с 70 (а не 60): после снижения THIRST_PER_TICK 0.07→0.05
+    // (balance-analyst Фаза 1) со старта 60 порог не достигался бы за 400 тиков —
+    // 70 возвращает пересечение thirst в горизонт, сохраняя смысл теста.
+    const vitals = { hunger: 70, thirst: 70, fatigue: 40, fear: 100, hp: 100 };
     const cont = createSimWorld(38 as Seed);
     const cEid = placeNeeder(cont, vitals);
     needsScheduler().run(cont, 400);
@@ -534,7 +537,7 @@ describe('resume-безопасность детекции порога (P0 де
       tick: e.tick,
       need: (e.payload as { need: string }).need,
     }));
-    // hunger (70→80 при 0.035/тик) пересекает ~тик 286; thirst (60→85 при 0.07) ~тик 357;
+    // hunger (70→80 при 0.035/тик) пересекает ~тик 286; thirst (70→85 при 0.05) ~тик 300;
     // оба ПОСЛЕ сплита на 137 → тест реально проверяет crossing через resume.
     expect(contThresh.map((t) => t.need)).toEqual(['hunger', 'thirst']);
 

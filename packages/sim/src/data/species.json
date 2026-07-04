@@ -9,7 +9,7 @@
       "power": 2,
       "melee": 3,
       "reproCap": 20,
-      "gestationTicks": 43200,
+      "gestationTicks": 7200,
       "foragePerTick": 0.4,
       "meatYield": 40
     },
@@ -20,9 +20,9 @@
       "herdMax": 4,
       "flees": false,
       "power": 8,
-      "melee": 14,
+      "melee": 8,
       "reproCap": 12,
-      "gestationTicks": 36000,
+      "gestationTicks": 7200,
       "foragePerTick": 0.6,
       "meatYield": 60
     }

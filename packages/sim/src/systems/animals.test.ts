@@ -486,7 +486,11 @@ describe('популяция за 10 дней: не взрывается и не
 // RESUME (P0): размножение stateless — непрерывный ≡ split save/load
 // ─────────────────────────────────────────────────────────────────────────────
 describe('RESUME (P0, закон №8): непрерывный ≡ split save/load (размножение без таймера)', () => {
-  const HERD = 1;
+  // HERD=10: при gestationTicks=7200 (balance-analyst Фаза 1) даёт племенной тик
+  // ~4620 — достаточно поздний, чтобы сплит на MID=3000 попал ДО первого рождения
+  // (у HERD=1 фаза схлопнулась бы в 30 — сплит уже некуда поставить). Значение
+  // герда влияет ТОЛЬКО на фазу (детерминированный хеш id), не на условия приплода.
+  const HERD = 10;
   const GEST = getSpecies(DEER).gestationTicks;
   const BREEDING_TICK = herdPhaseTick(HERD, GEST);
   const N = BREEDING_TICK + 2 * STEP; // прогон охватывает племенной тик

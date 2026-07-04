@@ -331,7 +331,7 @@ describe('карта: выживание — «NPC не умрёт от жажд
     // Сцена: NPC с нулевой жаждой выходит из худшей точки. Порог THIRST_CRITICAL
     // достигается за THIRST_CRITICAL/THIRST_PER_TICK тиков. Ближайшая вода
     // обязана быть ближе этого бюджета — иначе локация = смертельная ловушка.
-    const ticksToCritical = THIRST_CRITICAL / THIRST_PER_TICK; // ~1214
+    const ticksToCritical = THIRST_CRITICAL / THIRST_PER_TICK; // ~1700 (THIRST_PER_TICK 0.05)
     let worst = 0; let worstLoc = -1;
     for (let i = 0; i < N; i++) {
       const d = nearestByTicks(i, (l) => l.water);
