@@ -473,4 +473,31 @@ export type SimEvent =
         readonly qty: number;
         readonly loc: LocationId;
       };
+    })
+  | (SimEventBase & {
+      type: 'loot/transferred';
+      /**
+       * ЛУТ ПОБЕЖДЁННОГО перешёл к победителю столкновения (задача 2.11, система
+       * Encounters, человек-vs-человек, D-060/D-049). После разрешения боя
+       * (`encounter/resolved`) деньги и ВЕСЬ инвентарь ПРОИГРАВШЕГО `from`
+       * ФИЗИЧЕСКИ переезжают к победителю `to` в локации `loc`. Это ПЕРЕВОД (закон
+       * №3), НЕ создание/уничтожение массы: Σ денег и Σ каждого предмета мира НЕ
+       * меняются, поэтому событие НЕ леджерится (EconomyInvariant его игнорирует —
+       * дельта леджера 0, как `trade/executed` D-047 и `artifact/collected` D-057).
+       * `items` — что перешло, парами `[itemId, qty]` (сорт. по itemId), `money` —
+       * переведённые деньги (>=0). Событие эмитится ТОЛЬКО когда реально что-то
+       * перешло (`money>0 || items.length>0`). ПРОИГРАВШИЙ обнуляется ДО того, как
+       * Death (1.11) сделает труп: если `from` погиб, его труп несёт УЖЕ пустой
+       * инвентарь (лут не задваивается — он на победителе; масса сохранена). Грабёж
+       * ПРИЧИНЕН из состояния (закон №2): атакующий с Task=ROB встал у co-located
+       * цели, исход — seeded резолвер (D-022); `causedBy` = id `encounter/resolved`
+       * этого боя (перевод лута есть СЛЕДСТВИЕ исхода).
+       */
+      payload: {
+        readonly from: EntityId;
+        readonly to: EntityId;
+        readonly items: ReadonlyArray<readonly [ItemId, number]>;
+        readonly money: number;
+        readonly loc: LocationId;
+      };
     });
