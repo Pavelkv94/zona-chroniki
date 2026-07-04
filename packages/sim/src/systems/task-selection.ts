@@ -13,7 +13,9 @@
  * 'inventory'; из него выводится ПОВОД торговать — нехватка эссеншелов/избыток на
  * сбыт, задача 2.6) и СТАТИЧЕСКИЕ свойства локаций из data (water/game/forage/danger).
  * Живые животные (носители Animal+Alive) — как цели охоты; поселения (Settlement+
- * Position) — как цели торговли. TaskSelection НЕ читает глобальное состояние мира в обход восприятия и НЕ
+ * Position) — как цели торговли; аномальные поля (AnomalyField+Position) с артефактом
+ * на наземном луте ('inventory' поля, D-046) — как цели SEARCH (задача 2.10).
+ * TaskSelection НЕ читает глобальное состояние мира в обход восприятия и НЕ
  * зовёт другие системы напрямую: общение — через компоненты и шину (закон №6).
  * Угроза влияет на выбор ЧЕРЕЗ `Needs.fear` (его поднимает Perception 1.7 от
  * co-located угрозы) — поэтому отдельного чтения `contacts` здесь нет: страх уже
@@ -31,6 +33,7 @@
  *   REST   = W.restBase + W.fatigue·fatigue·REST_FATIGUE_FACTOR (fallback, всегда >0)
  *   WORK   = W.work·safety·max(0, 1−maxNeed)   (ТОЛЬКО носитель Job И день, задача 2.4)
  *   TRADE  = W.trade·safety·max(0, 1−maxNeed)  (ТОЛЬКО повод в инвентаре И день, задача 2.6)
+ *   SEARCH = W.search·safety·max(0, 1−maxNeed) (ТОЛЬКО достижимое поле с артефактом И день, задача 2.10)
  * EAT без еды и HUNT без достижимой дичи ИСКЛЮЧАЮТСЯ из argmax (−∞): нельзя есть
  * то, чего нет (закон №3), и нельзя охотиться там, где дичи нет. WORK ИСКЛЮЧЁН (−∞)
  * у безработных (нет Job) и ночью (работник спит, а не выходит на смену) — поведение
@@ -54,7 +57,8 @@
  *
  * ── Детерминированный argmax (закон №8, D-020) ───────────────────────────────
  * Выбор — задача с наибольшей оценкой. При РАВЕНСТВЕ — МЕНЬШИЙ код TaskKind
- * (порядок enum: SLEEP<EAT<DRINK<FORAGE<HUNT<REST<FLEE<WORK<TRADE), а НЕ rng-tie-break:
+ * (порядок enum: SLEEP<EAT<DRINK<FORAGE<HUNT<REST<FLEE<WORK<TRADE<SEARCH; SEARCH=10 —
+ * ПОСЛЕДНИЙ код, на точном равенстве уступает любой задаче 0..8), а НЕ rng-tie-break:
  * кандидаты обходятся в порядке возрастания кода со строгим `>`, поэтому первый
  * достигший максимума (меньший код) удерживает выбор. rng в решении НЕ участвует
  * (закон №2: случайность — только физиология, здесь её нет).
@@ -68,7 +72,8 @@
  *   HUNT           → ближайшая loc с живой дичью; targetEid = min-eid особь в ней;
  *   FLEE           → соседняя loc с наименьшим danger (tie — min id);
  *   WORK           → Job.workplace (рабочее место; если уже там — на месте);
- *   TRADE          → ближайшее поселение (Settlement+Position; если уже там — на месте).
+ *   TRADE          → ближайшее поселение (Settlement+Position; если уже там — на месте);
+ *   SEARCH         → ближайшее аномальное поле с артефактом на луте (если уже там — на месте).
  * Ближайшая loc считается детерминированным Дейкстрой (pathfinding), tie по
  * стоимости — меньший id локации.
  *
@@ -88,7 +93,7 @@
 import type { EntityId, LocationId } from '@zona/shared';
 import type { System, SystemCtx } from '../core/system';
 import { queryEntities, hasComponent, addComponent, stampCause } from '../core/ecs';
-import { Position, Needs, Task, Skills, Home, Animal, Human, Alive, Job, Settlement, TaskKind } from '../core/components';
+import { Position, Needs, Task, Skills, Home, Animal, Human, Alive, Job, Settlement, AnomalyField, TaskKind } from '../core/components';
 import { MAP, getLocation, getItem, neighbors } from '../data/index';
 import { MAP_GRAPH, shortestPath } from './pathfinding';
 import { NEED_MAX } from '../balance/needs';
@@ -238,6 +243,22 @@ function hasTradeReason(inv: readonly InventoryEntry[] | undefined): boolean {
 }
 
 /**
+ * true, если на наземном луте (`'inventory'`, D-046) аномального поля лежит артефакт
+ * (`kind === 'artifact'`) с qty>0 — тот, который ArtifactSpawn (2.9, D-054) родил и
+ * положил на eid поля. Основа ПРИЧИННОСТИ SEARCH (закон №2): NPC идёт к полю, только
+ * если там ФИЗИЧЕСКИ есть что подобрать (не «X% находки»). Обход массива инвентаря
+ * (стабильный порядок — сорт. по item) детерминирован; результат порядко-независим
+ * (дизъюнкция), закон №8.
+ */
+function fieldHasArtifact(inv: readonly InventoryEntry[] | undefined): boolean {
+  if (inv === undefined) return false;
+  for (const e of inv) {
+    if (e.qty > 0 && getItem(e.item).kind === 'artifact') return true;
+  }
+  return false;
+}
+
+/**
  * Ближайшая цель охоты для наблюдателя в `loc`: локация с живой дичью, минимальная
  * по pathCost (tie — меньший id), и min-eid особь в ней (детерминированная жертва,
  * закон №8). `null`, если живой дичи нигде нет/недостижима — тогда HUNT не выбирается.
@@ -305,6 +326,21 @@ export const TaskSelection: System = {
     for (const s of queryEntities(ecs, [Settlement])) settlementLocSet.add(POS.loc[s] as number);
     const settlementLocs = Array.from(settlementLocSet).sort((a, b) => a - b) as LocationId[];
 
+    // ── Локации аномальных полей С АРТЕФАКТОМ на земле (цель SEARCH, задача 2.10):
+    // поле (AnomalyField+Position), на луте которого лежит артефакт (закон №2 —
+    // причина из состояния мира, не «X% находки»). Собираем один раз до цикла NPC,
+    // как settlementLocs/animalLocs, по возрастанию id (детерминизм tie-break,
+    // закон №8). Пусто ⇒ SEARCH недостижим (nearestLoc вернул бы null) ⇒ sSearch=−∞.
+    // ТЕКУЩИЙ worldgen НЕ создаёт носителей AnomalyField (до 2.16) ⇒ это множество
+    // всегда пусто на живом прогоне ⇒ SEARCH никогда не выбирается ⇒ голдены Фазы 1
+    // не сдвигаются (D-057).
+    const artifactFieldLocSet = new Set<number>();
+    for (const f of queryEntities(ecs, [AnomalyField, Position])) {
+      const inv = world.resources.get<InventoryEntry[]>(INVENTORY_KEY, f);
+      if (fieldHasArtifact(inv)) artifactFieldLocSet.add(POS.loc[f] as number);
+    }
+    const artifactFieldLocs = Array.from(artifactFieldLocSet).sort((a, b) => a - b) as LocationId[];
+
     for (const eid of queryEntities(ecs, [Human, Alive, Needs])) {
       const loc = POS.loc[eid] as number;
       const locData = getLocation(loc as LocationId);
@@ -337,6 +373,12 @@ export const TaskSelection: System = {
         settlementLocs.length > 0 ? nearestLoc(loc, settlementLocs) : undefined;
       // Повод торговать — причинно из инвентаря (нехватка эссеншелов ИЛИ избыток).
       const canTrade = nearestSettlement !== undefined && !night && hasTradeReason(inv);
+      // Поход за артефактом (задача 2.10): ближайшее ДОСТИЖИМОЕ поле с артефактом на
+      // земле — цель SEARCH. `undefined`, если таких полей нет ИЛИ недостижимы (D-026)
+      // ⇒ SEARCH исключён. Повод причинен: артефакт ФИЗИЧЕСКИ лежит на луте поля.
+      const nearestArtifactField =
+        artifactFieldLocs.length > 0 ? nearestLoc(loc, artifactFieldLocs) : undefined;
+      const canSearch = nearestArtifactField !== undefined && !night;
 
       // ── Оценки (веса из balance/utility, закон №7) ─────────────────────────
       const sSleep = W.fatigue * fatigue + (night ? W.night : 0) + safety * W.safe;
@@ -368,6 +410,13 @@ export const TaskSelection: System = {
       // TRADE над FORAGE/REST-фоллбэком (сбыть излишек/докупить эссеншел). Нет повода/
       // поселений/ночь ⇒ −∞ (исключён из argmax, как EAT без еды).
       const sTrade = canTrade ? W.trade * safety * needCalm : -Infinity;
+      // SEARCH (задача 2.10): ТОЛЬКО при достижимом поле с артефактом (canSearch) +
+      // день. Гейт `safety · needCalm` как у WORK/TRADE: артефакт — не выживание,
+      // любая критическая нужда/страх гасят SEARCH к нулю и пропускают вперёд EAT/
+      // DRINK/SLEEP/HUNT/FLEE. Вес W.search выше W.trade (жадность за дорогим хабаром
+      // перебивает рутинную торговлю у спокойного NPC), но needCalm держит его ниже
+      // выживания. Нет поля/ночь ⇒ −∞ (исключён из argmax, как EAT без еды).
+      const sSearch = canSearch ? W.search * safety * needCalm : -Infinity;
 
       // ── argmax по возрастанию кода TaskKind + строгое `>` ⇒ tie → меньший код
       // (D-020, НЕ rng). Порядок массива ОБЯЗАН быть по возрастанию кода.
@@ -381,6 +430,7 @@ export const TaskSelection: System = {
         [TaskKind.FLEE, sFlee],
         [TaskKind.WORK, sWork],
         [TaskKind.TRADE, sTrade],
+        [TaskKind.SEARCH, sSearch],
       ];
       let kind: TaskKind = TaskKind.FORAGE;
       let best = -Infinity;
@@ -420,6 +470,16 @@ export const TaskSelection: System = {
           // (Movement no-op, Trade сработает у стоящего NPC). targetEid не нужен —
           // Trade находит поселение по loc сам (systems/trade.ts).
           targetLoc = nearestSettlement as LocationId;
+          break;
+        case TaskKind.SEARCH:
+          // canSearch гарантирует nearestArtifactField!==undefined (иначе sSearch=−∞ и
+          // SEARCH не выбран). Цель — ближайшее поле с артефактом; уже на месте ⇒
+          // targetLoc==loc (Movement no-op, ArtifactSearch сработает у стоящего NPC).
+          // targetEid НЕ ставится — ArtifactSearch (2.10) находит поле по loc сам
+          // (мирроринг Trade, D-056): лут поля транзитен (подбор его опустошает),
+          // поэтому хранить eid конкретного поля в задаче хрупко (устареет при
+          // опустошении), а loc-резолвинг всегда берёт поле с реальным лутом.
+          targetLoc = nearestArtifactField as LocationId;
           break;
         // EAT/FORAGE/REST — на месте (target = loc, уже проставлено).
         default:

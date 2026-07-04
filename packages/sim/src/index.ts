@@ -110,3 +110,10 @@ export { Export } from './systems/export';
 // и не создаётся worldgen (подключит 2.16) — экспорт как System для прогона в отдельном
 // планировщике (headless-инвариант 2.9) и будущей интеграции.
 export { ArtifactSpawn } from './systems/artifact-spawn';
+
+// Система ArtifactSearch (2.10, D-057): исполнение подбора артефакта стоящим в
+// аномальном поле NPC (Task=SEARCH) — перевод лута поля в инвентарь (масса сохраняется,
+// D-047, НЕ леджер). НЕ входит в registerPhase1Systems и не создаётся worldgen (носителей
+// AnomalyField нет до 2.16) — экспорт как System для прогона в отдельном планировщике
+// (headless-инвариант 2.10) и будущей интеграции.
+export { ArtifactSearch } from './systems/artifact-search';

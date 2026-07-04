@@ -449,4 +449,28 @@ export type SimEvent =
         readonly price: number;
         readonly money: number;
       };
+    })
+  | (SimEventBase & {
+      type: 'artifact/collected';
+      /**
+       * NPC `collector` ПОДОБРАЛ `qty` единиц артефакта `item` с наземного лута
+       * аномального поля `field` в локации `loc` (задача 2.10, система ArtifactSearch,
+       * D-057). Это ПЕРЕВОД (закон №3), а НЕ добыча из воздуха: запись артефакта
+       * ФИЗИЧЕСКИ переезжает из inventory поля (куда её положил ArtifactSpawn 2.9,
+       * D-054, уже отледжерив рождение как `item/harvested{source:'anomaly'}`) в
+       * inventory NPC. Суммарная масса мира (Σ 'inventory' по всем eid) НЕ меняется,
+       * поэтому событие НЕ леджерится (EconomyInvariant его игнорирует — товарная
+       * дельта леджера 0, как у `trade/executed`, D-047). Подбор ПРИЧИНЕН из состояния
+       * (закон №2, НЕ «X% находки»): NPC с Task=SEARCH стоит в локации поля, на луте
+       * которого лежит артефакт; решение выбрано utility-AI (TaskSelection 2.10), rng
+       * не участвует. `causedBy` = `Task.causeEvent` NPC (событие `task/selected`,
+       * выбравшее SEARCH, D-030/D-047), либо `null`, если причина не проштампована.
+       */
+      payload: {
+        readonly collector: EntityId;
+        readonly field: EntityId;
+        readonly item: ItemId;
+        readonly qty: number;
+        readonly loc: LocationId;
+      };
     });
