@@ -151,3 +151,11 @@ export type { Subject, MemoryRecord, RelationEntry, AvoidEntry } from '@zona/sha
 // seam для леджера item/broughtIn (источник инвентаря — вне функции, D-052).
 export { spawnStalker } from './worldgen';
 export type { SpawnStalkerConfig, ProfessionSpec } from './worldgen';
+
+// Система PopulationInflux (2.14, D-061): ПРИЧИННЫЙ приток населения из-за Периметра
+// (порог привлекательности из окна событий, НЕ «X% спавн/тик»). Закрывает демо-петлю
+// Фазы 1 (D-043 спираль смерти). НЕ входит в registerPhase1Systems и не создаётся
+// worldgen (подключит 2.16) — экспорт как System для прогона в отдельном планировщике
+// (headless-инвариант 2.14) и будущей интеграции. Голдены Фазы 1 не сдвигаются.
+export { PopulationInflux, computeAttractiveness } from './systems/population-influx';
+export type { Attractiveness } from './systems/population-influx';
