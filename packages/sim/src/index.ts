@@ -144,3 +144,10 @@ export {
   AVOID_KEY,
 } from './systems/memory';
 export type { Subject, MemoryRecord, RelationEntry, AvoidEntry } from '@zona/shared';
+
+// Рождение ОДНОГО сталкера/NPC (рефактор 2.14a, D-059). Публична — чтобы
+// PopulationInflux (2.14/D-051, приток населения) спавнил новоприбывших ТЕМ ЖЕ
+// кодом, что и worldgen (новичок = стартовый сталкер бит-в-бит). Возвращает eid как
+// seam для леджера item/broughtIn (источник инвентаря — вне функции, D-052).
+export { spawnStalker } from './worldgen';
+export type { SpawnStalkerConfig, ProfessionSpec } from './worldgen';

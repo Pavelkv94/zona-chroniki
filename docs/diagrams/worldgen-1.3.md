@@ -22,6 +22,29 @@ graph TD
   WG -. экспорт .-> IDX["@zona/sim index (для CLI 1.12)"]
 ```
 
+## Рефактор 2.14a (D-059): извлечён `spawnStalker`
+
+Рождение ОДНОГО человека вынесено в переиспользуемую
+`spawnStalker(world, rng, cfg): EntityId`. worldgen зовёт её в цикле на когорту
+(20) и на каждого торговца; PopulationInflux (2.14/D-051, приток) позже — на
+новоприбывших. Поведение worldgen НЕ изменилось (голдены Фазы 1 бит-в-бит:
+порядок и число rng-вызовов сохранены — `нужды×3 → навыки×3 → имя → [профессия]`).
+
+```mermaid
+graph TD
+  WGS["spawnStalkers (когорта 20)"] -->|cfg: loc/home=Кордон, faction=loners,<br/>profession=pick(пул), inventory=фабрика| SS["spawnStalker(world,rng,cfg): eid"]
+  WGT["spawnTrader (при поселении)"] -->|cfg: loc/home=s.loc, faction=s.faction,<br/>profession=fixed('trader')| SS
+  INFLUX["PopulationInflux 2.14 (D-051)<br/>economy-engineer"] -. вызовет .->|cfg: loc/home=ENTRY_LOCATION,<br/>eid → леджер item/broughtIn| SS
+  SS --> NPC["Position(стоит)+Needs(<крит)+Health(100)<br/>+Skills+Home+Human+Alive<br/>+имя/фракция/профессия/деньги/инвентарь<br/>(Task НЕ ставится, D-020)"]
+```
+
+SEAM для 2.14: `cfg.loc` (точка входа), `cfg.inventory` (фабрика свежей копии, без
+aliasing — закон №3), возвращаемый `eid` (по нему 2.14 заледжерит `item/broughtIn`
+— источник инвентаря; сам леджер в функции НЕ реализован, граница зон D-052).
+Профессия — дискриминированный союз `{kind:'pick',from}` / `{kind:'fixed',id}`:
+`pick` тратит ровно один `rng.pick` (как когорта), `fixed` — ноль (как торговец),
+чем и держится бит-в-бит совпадение потоков.
+
 ## Что создаётся
 
 ```mermaid

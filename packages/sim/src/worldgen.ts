@@ -1,7 +1,11 @@
 /**
  * @module @zona/sim/worldgen
  *
- * Стартовая генерация мира (задача 1.3; расширена 2.2). Вызывается РОВНО ОДИН РАЗ
+ * Стартовая генерация мира (задача 1.3; расширена 2.2; рефактор 2.14a — D-059).
+ * Рождение ОДНОГО человека вынесено в переиспользуемую `spawnStalker(world,rng,cfg)`:
+ * worldgen зовёт её в цикле (когорта 20) и на торговцев, а PopulationInflux (2.14/
+ * D-051, приток) позже — на новоприбывших. Поведение worldgen НЕ изменилось (голдены
+ * Фазы 1 бит-в-бит: порядок и число rng-вызовов сохранены). Вызывается РОВНО ОДИН РАЗ
  * при сборке мира (headless-CLI 1.12), ДО первого тика планировщика. Населяет пустой
  * `SimWorld` сущностью-миром (WorldClock singleton), 20 сталкерами в Кордоне, стадами
  * животных в глубоких диких/руинных локациях и (2.2) ПОСЕЛЕНИЯМИ из settlements.json:
@@ -144,6 +148,123 @@ interface InventoryEntry {
 }
 
 /**
+ * КАК выбирается профессия NPC при спавне. Дискриминированный союз, чтобы
+ * СОХРАНИТЬ точный порядок потребления rng (закон №8): вариант `pick` тратит
+ * ровно один `rng.pick` (как стартовая когорта), `fixed` — НИ ОДНОГО (как
+ * торговец, чья профессия предопределена). Смешивать эти пути одним «id | список»
+ * нельзя: тогда фикс-путь всё равно продвигал бы rng и сдвигал голдены.
+ */
+export type ProfessionSpec =
+  | { readonly kind: 'fixed'; readonly id: string }
+  | { readonly kind: 'pick'; readonly from: readonly string[] };
+
+/**
+ * Конфигурация спавна ОДНОГО сталкера/NPC (seam для worldgen 1.3 И
+ * PopulationInflux 2.14/D-051). Всё, что различает стартовую когорту, торговца и
+ * будущего новоприбывшего, вынесено сюда; общий контракт (Position/Needs/Health/
+ * Skills/Home/Human/Alive + холодные имя/деньги/инвентарь, БЕЗ Task — D-020) и
+ * все балансовые распределения (нужды/навыки/HP) — внутри spawnStalker.
+ *
+ * ── SEAM для 2.14 (D-051) ────────────────────────────────────────────────────
+ * `loc` — точка входа в Зону (ENTRY_LOCATION, Кордон): worldgen и приток
+ * населения расставляют новичков ЗДЕСЬ, а не «возле игрока» (закон №1). `inventory`
+ * — фабрика СВЕЖЕЙ копии (см. ниже): 2.14 передаст ту же STARTING_INVENTORY-копию,
+ * а САМ факт «принесено из-за Периметра» ЗАЛЕДЖЕРИТ (item/broughtIn) уже ПОСЛЕ
+ * вызова, по возвращённому eid — леджер/источник в этой функции НЕ реализован
+ * (граница зон: генезис-леджер — economy-engineer, D-052).
+ */
+export interface SpawnStalkerConfig {
+  /** Локация, где NPC стоит на старте (Position.loc === dest ⇒ без движения, D-019). */
+  readonly loc: LocationId;
+  /** Home.loc — база (сон/хранение). Для когорты/новичков = ENTRY_LOCATION; торговец — при поселении. */
+  readonly home: LocationId;
+  /** Фракция (id, ОБЯЗАН резолвиться в factions.json, закон №10). */
+  readonly faction: FactionId;
+  /** Профессия: фикс. id (торговец) ИЛИ seeded-выбор из пула (когорта/новички). */
+  readonly profession: ProfessionSpec;
+  /** Стартовые деньги (внесены из-за Периметра, D-021; леджер item/broughtIn — вне функции, 2.14). */
+  readonly money: number;
+  /**
+   * Фабрика СВЕЖЕЙ копии инвентаря (новый массив + новые {item,qty}). Вызывается
+   * РОВНО ОДИН раз на этого NPC — владелец получает собственную копию, БЕЗ aliasing
+   * (прошлый баг: общий ref → расход in-place экономикой тёк на всех, закон №3).
+   */
+  readonly inventory: () => InventoryEntry[];
+  /**
+   * Общий Set ключей `"<firstIdx>|<lastIdx>"` (ИНДЕКСЫ в NAMES.first/last, НЕ строки
+   * имён) для дедупликации полных имён в пределах когорты (закон №4). ВНИМАНИЕ 2.14
+   * (PopulationInflux): чтобы новоприбывшие не столкнулись с ИМЕНАМИ уже живущих NPC,
+   * пред-заполняй этот Set ИНДЕКСНЫМИ ключами (конвертируй имя→индексы через NAMES),
+   * а не строками "first last" — pickName сверяет индексный ключ, строку он не увидит.
+   */
+  readonly usedNames: Set<string>;
+}
+
+/**
+ * Создаёт ОДНОГО сталкера/NPC по контракту стартовой когорты и возвращает его eid.
+ * ЕДИНСТВЕННАЯ точка рождения человека в Зоне: и worldgen (стартовые 20 + торговцы),
+ * и будущий PopulationInflux (2.14/D-051, приток новичков) идут через неё — так
+ * «новоприбывший» БИТ-В-БИТ соответствует стартовому сталкеру. Возвращает eid как
+ * seam для 2.14 (леджер item/broughtIn на источник инвентаря — по этому eid, вне
+ * функции; D-052).
+ *
+ * Детерминизм (закон №8): чистая по отношению к переданному `world` (мутирует ECS+
+ * ResourceStore, НЕ читает глобалей) и `rng` — весь недетерминизм из переданного
+ * подпотока. ПОРЯДОК потребления rng ФИКСИРОВАН и совпадает с прежним инлайном
+ * (нужды ×3 → навыки ×3 → имя → [профессия pick]) — иначе сдвинулись бы голдены
+ * Фазы 1. Task НЕ ставится (назначит TaskSelection на первом тике, D-020 — не idle).
+ */
+export function spawnStalker(world: SimWorld, rng: Rng, cfg: SpawnStalkerConfig): EntityId {
+  const eid = spawnEntity(world.ecs);
+
+  // Position: стоит на своей loc (dest===loc ⇒ без движения, D-019).
+  addComponent(world.ecs, Position, eid);
+  POS.loc[eid] = cfg.loc;
+  POS.dest[eid] = cfg.loc;
+  POS.etaTicks[eid] = 0;
+
+  // Needs: строго ниже критических порогов (D-027); страха нет.
+  addComponent(world.ecs, Needs, eid);
+  NEED.hunger[eid] = rng.range(STARTING_HUNGER_MIN, STARTING_HUNGER_MAX);
+  NEED.thirst[eid] = rng.range(STARTING_THIRST_MIN, STARTING_THIRST_MAX);
+  NEED.fatigue[eid] = rng.range(STARTING_FATIGUE_MIN, STARTING_FATIGUE_MAX);
+  NEED.fear[eid] = 0;
+
+  // Health: входят в Зону здоровыми (D-021).
+  addComponent(world.ecs, Health, eid);
+  HP.hp[eid] = HEALTH_MAX;
+
+  // Skills: детерминированный разброс в разумных границах.
+  addComponent(world.ecs, Skills, eid);
+  SKILL.shooting[eid] = rng.range(SKILL_MIN, SKILL_MAX);
+  SKILL.survival[eid] = rng.range(SKILL_MIN, SKILL_MAX);
+  SKILL.stealth[eid] = rng.range(SKILL_MIN, SKILL_MAX);
+
+  // Home: база (сон/хранение).
+  addComponent(world.ecs, Home, eid);
+  HOME.loc[eid] = cfg.home;
+
+  // Теги.
+  addComponent(world.ecs, Human, eid);
+  addComponent(world.ecs, Alive, eid);
+
+  // Холодные данные (D-007). Имя — непустые first+last (закон №4) + кличка.
+  const name = pickName(rng, cfg.usedNames);
+  world.resources.set<NameRecord>('name', eid, name);
+  world.resources.set<FactionId>('faction', eid, cfg.faction);
+  // Профессия: pick тратит один rng (как когорта), fixed — ноль (как торговец).
+  const profession =
+    cfg.profession.kind === 'pick' ? rng.pick(cfg.profession.from) : cfg.profession.id;
+  world.resources.set<string>('profession', eid, profession);
+  world.resources.set<number>('money', eid, cfg.money);
+  // СВЕЖИЙ инвентарь на КАЖДОГО NPC (фабрика зовётся здесь) — своя копия, без
+  // aliasing (закон №3, см. SpawnStalkerConfig.inventory).
+  world.resources.set<readonly InventoryEntry[]>('inventory', eid, cfg.inventory());
+
+  return eid;
+}
+
+/**
  * Заселяет пустой мир стартовым состоянием Зоны. Идемпотентности НЕ гарантирует —
  * вызывать РОВНО ОДИН РАЗ на свежесозданном `createSimWorld(seed)` до первого тика.
  * Мутирует `world` (ECS-сущности + ResourceStore) и НЕ публикует событий: источник
@@ -190,52 +311,22 @@ function spawnWorldClock(world: SimWorld): void {
  * Task НЕ ставится: назначит TaskSelection на первом тике (D-020).
  */
 function spawnStalkers(world: SimWorld, rng: Rng): void {
-  const usedNames = new Set<string>(); // «first|last» — избегаем полных дублей
+  const usedNames = new Set<string>(); // ключи "<firstIdx>|<lastIdx>" — избегаем полных дублей
 
   for (let i = 0; i < STALKER_COUNT; i++) {
-    const eid = spawnEntity(world.ecs);
-
-    // Position: стоит в Кордоне (dest===loc ⇒ без движения, D-019).
-    addComponent(world.ecs, Position, eid);
-    POS.loc[eid] = ENTRY_LOCATION;
-    POS.dest[eid] = ENTRY_LOCATION;
-    POS.etaTicks[eid] = 0;
-
-    // Needs: строго ниже критических порогов (D-027); страха нет.
-    addComponent(world.ecs, Needs, eid);
-    NEED.hunger[eid] = rng.range(STARTING_HUNGER_MIN, STARTING_HUNGER_MAX);
-    NEED.thirst[eid] = rng.range(STARTING_THIRST_MIN, STARTING_THIRST_MAX);
-    NEED.fatigue[eid] = rng.range(STARTING_FATIGUE_MIN, STARTING_FATIGUE_MAX);
-    NEED.fear[eid] = 0;
-
-    // Health: входят в Зону здоровыми (D-021).
-    addComponent(world.ecs, Health, eid);
-    HP.hp[eid] = HEALTH_MAX;
-
-    // Skills: детерминированный разброс в разумных границах.
-    addComponent(world.ecs, Skills, eid);
-    SKILL.shooting[eid] = rng.range(SKILL_MIN, SKILL_MAX);
-    SKILL.survival[eid] = rng.range(SKILL_MIN, SKILL_MAX);
-    SKILL.stealth[eid] = rng.range(SKILL_MIN, SKILL_MAX);
-
-    // Home: база — Кордон (сон/хранение).
-    addComponent(world.ecs, Home, eid);
-    HOME.loc[eid] = ENTRY_LOCATION;
-
-    // Теги.
-    addComponent(world.ecs, Human, eid);
-    addComponent(world.ecs, Alive, eid);
-
-    // Холодные данные (D-007). Имя — непустые first+last (закон №4) + кличка.
-    const name = pickName(rng, usedNames);
-    world.resources.set<NameRecord>('name', eid, name);
-    world.resources.set<FactionId>('faction', eid, STARTING_FACTION_ID);
-    world.resources.set<string>('profession', eid, rng.pick(STARTING_PROFESSION_IDS));
-    world.resources.set<number>('money', eid, STARTING_MONEY);
-    // СВЕЖИЙ инвентарь на КАЖДОГО сталкера (новый массив + новые {item,qty}): каждый
-    // владеет своей копией. Иначе (общий массив) расход инвентаря in-place экономикой
-    // (1.10) менял бы предметы у ВСЕХ сразу — исчезновение/появление из воздуха (№3).
-    world.resources.set<readonly InventoryEntry[]>('inventory', eid, buildStartingInventory());
+    // Стартовая когорта: вход в Кордон, база — Кордон, фракция loners, профессия —
+    // seeded-выбор из пула (тратит один rng, как прежний инлайн), деньги/инвентарь
+    // «внесены из-за Периметра» (D-021). spawnStalker хранит общий контракт и порядок
+    // rng (нужды→навыки→имя→профессия) — БИТ-В-БИТ как раньше (голдены Фазы 1).
+    spawnStalker(world, rng, {
+      loc: ENTRY_LOCATION as LocationId,
+      home: ENTRY_LOCATION as LocationId,
+      faction: STARTING_FACTION_ID,
+      profession: { kind: 'pick', from: STARTING_PROFESSION_IDS },
+      money: STARTING_MONEY,
+      inventory: buildStartingInventory,
+      usedNames,
+    });
   }
 }
 
@@ -450,41 +541,17 @@ function spawnTrader(
   s: SettlementData,
   usedNames: Set<string>,
 ): void {
-  const eid = spawnEntity(world.ecs);
-
-  addComponent(world.ecs, Position, eid);
-  POS.loc[eid] = s.loc;
-  POS.dest[eid] = s.loc;
-  POS.etaTicks[eid] = 0;
-
-  // Needs: строго ниже критических порогов (D-027; тот же безопасный диапазон, что у
-  // сталкеров) — торговец не начинает истощаться с тика 0.
-  addComponent(world.ecs, Needs, eid);
-  NEED.hunger[eid] = rng.range(STARTING_HUNGER_MIN, STARTING_HUNGER_MAX);
-  NEED.thirst[eid] = rng.range(STARTING_THIRST_MIN, STARTING_THIRST_MAX);
-  NEED.fatigue[eid] = rng.range(STARTING_FATIGUE_MIN, STARTING_FATIGUE_MAX);
-  NEED.fear[eid] = 0;
-
-  addComponent(world.ecs, Health, eid);
-  HP.hp[eid] = HEALTH_MAX;
-
-  addComponent(world.ecs, Skills, eid);
-  SKILL.shooting[eid] = rng.range(SKILL_MIN, SKILL_MAX);
-  SKILL.survival[eid] = rng.range(SKILL_MIN, SKILL_MAX);
-  SKILL.stealth[eid] = rng.range(SKILL_MIN, SKILL_MAX);
-
-  // Home — поселение (торговец при своём поселении).
-  addComponent(world.ecs, Home, eid);
-  HOME.loc[eid] = s.loc;
-
-  addComponent(world.ecs, Human, eid);
-  addComponent(world.ecs, Alive, eid);
-
-  const name = pickName(rng, usedNames);
-  world.resources.set<NameRecord>('name', eid, name);
-  // Фракция торговца = фракция поселения (закон №10, резолвится в factions.json).
-  world.resources.set<FactionId>('faction', eid, s.faction as FactionId);
-  world.resources.set<string>('profession', eid, TRADER_PROFESSION_ID);
-  world.resources.set<number>('money', eid, STARTING_MONEY);
-  world.resources.set<readonly InventoryEntry[]>('inventory', eid, buildStartingInventory());
+  // Торговец — обычный сталкер (spawnStalker), кроме: стоит/живёт при поселении
+  // (loc/home = s.loc), фракция = фракция поселения, профессия ПРЕДОПРЕДЕЛЕНА
+  // ('trader' ⇒ kind:'fixed' — НЕ тратит rng.pick, как прежний инлайн). Личные
+  // деньги/инвентарь «как у сталкера» (D-021); склад/касса ПОСЕЛЕНИЯ — отдельный eid.
+  spawnStalker(world, rng, {
+    loc: s.loc as LocationId,
+    home: s.loc as LocationId,
+    faction: s.faction as FactionId,
+    profession: { kind: 'fixed', id: TRADER_PROFESSION_ID },
+    money: STARTING_MONEY,
+    inventory: buildStartingInventory,
+    usedNames,
+  });
 }

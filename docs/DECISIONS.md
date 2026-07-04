@@ -1200,3 +1200,39 @@ balance/social.ts (новый: горизонт/пороги/ставки зат
 (ROB-выбор читает getRelation/factionReputation), 2.13 (addMemory на ограбление + addAvoid → обход), 2.16
 (подключение MemoryDecay к registerPhase2Systems). ХВОСТ balance-analyst: горизонт/пороги — тюнинг по метрикам
 (как долго NPC помнит обиду, как быстро остывает вражда).
+
+## D-059 | Фаза 2 / задача 2.14a | 2026-07-04
+Решение (рефактор spawnStalker — ПОДГОТОВКА к PopulationInflux 2.14/D-051; чистый рефактор без изменения
+поведения, граница зон D-052: core-engineer): рождение ОДНОГО человека в Зоне вынесено из инлайна worldgen в
+переиспользуемую `spawnStalker(world: SimWorld, rng: Rng, cfg: SpawnStalkerConfig): EntityId`.
+1) ЕДИНАЯ ТОЧКА РОЖДЕНИЯ. worldgen зовёт её в цикле на стартовую когорту (20) и на каждого торговца поселения;
+   PopulationInflux (2.14) позже — на новоприбывших. «Новичок» становится стартовым сталкером БИТ-В-БИТ (тот же
+   контракт Position/Needs<крит(D-027)/Health(полное)/Skills/Home/Human/Alive + холодные имя/фракция/профессия/
+   деньги/инвентарь; БЕЗ Task — назначит TaskSelection, D-020, не idle, закон №4).
+2) КОНФИГ (seam). SpawnStalkerConfig = { loc, home, faction, profession, money, inventory, usedNames }. Всё, что
+   различает когорту/торговца/новичка, — здесь; распределения нужд/навыков/HP (STARTING_*/SKILL_*/HEALTH_MAX) —
+   внутри функции. SEAM для 2.14/D-051: `loc` — точка входа (ENTRY_LOCATION/Кордон, закон №1 — не «возле игрока»);
+   `inventory` — фабрика СВЕЖЕЙ копии (новый массив+объекты), зовётся РОВНО раз на NPC ⇒ независимые копии без
+   aliasing (прошлый баг: общий ref тёк расходом in-place, закон №3); возвращаемый `eid` — по нему 2.14 заледжерит
+   `item/broughtIn` (источник инвентаря «из-за Периметра»). Сам леджер/источник в функции НЕ реализован — это доля
+   economy-engineer (D-052). NB (находка QA): `usedNames` — Set ИНДЕКСНЫХ ключей "<firstIdx>|<lastIdx>", НЕ строк
+   имён; 2.14 обязана пред-заполнять его индексами (имя→индекс через NAMES), иначе дедуп имён живущих не сработает.
+3) ПРОФЕССИЯ = дискриминированный союз `{kind:'pick',from} | {kind:'fixed',id}` — чтобы СОХРАНИТЬ поток rng (закон
+   №8): `pick` тратит ровно один `rng.pick` (как прежняя когорта), `fixed` — НОЛЬ (как торговец с предопределённой
+   'trader'). Плоский «id | список» сдвинул бы голдены (фикс-путь всё равно продвигал бы rng). Порядок потребления
+   rng ФИКСИРОВАН и тождествен инлайну: нужды×3 → навыки×3 → имя(int,int,pick,pick) → [профессия pick].
+4) ВИДИМОСТЬ. `spawnStalker` + типы `SpawnStalkerConfig`/`ProfessionSpec` экспортированы из @zona/sim (index.ts) —
+   PopulationInflux (economy-engineer, D-052) импортирует их ТЕМ ЖЕ путём, что worldgen. Внутренние хелперы
+   (pickName/buildStartingInventory) остались приватными в модуле.
+5) ДОКАЗАТЕЛЬСТВО КОРРЕКТНОСТИ (главный критерий рефактора): голдены Фазы 1 НЕ сдвинуты — sim:100days 37a19d72,
+   day1 seed42 165688eb, пустой мир 481914ae (core, не тронут) неизменны (прогон CLI + существующие голден-тесты
+   зелёные). Поведение worldgen тождественно прежнему.
+Альтернативы: (а) параметризовать нужды/навыки/HP через cfg — ОТКЛОНЕНО (они одинаковы для всех троих сценариев,
+лишний seam); (б) реализовать item/broughtIn-леджер прямо в spawnStalker — ОТКЛОНЕНО (граница зон D-052: генезис-
+леджер притока — economy-engineer; функция остаётся чистым рождением, eid — достаточный seam); (в) держать
+spawnStalker приватной в worldgen-модуле — ОТКЛОНЕНО (2.14 в другом модуле, нужен публичный импорт).
+Проверка: typecheck exit 0; npm run test зелёный (+ новый spawn-stalker.test: детерминизм/контракт/seam loc-home/
+профессия pick-vs-fixed/инвентарь-независимые-копии); существующие worldgen.test/phase1-gate/cli голдены зелёные.
+Затрагивает: worldgen.ts (spawnStalker + SpawnStalkerConfig/ProfessionSpec; spawnStalkers/spawnTrader зовут её),
+index.ts (экспорт spawnStalker + типы), docs/diagrams/worldgen-1.3.md, spawn-stalker.test.ts. ХВОСТ 2.14:
+PopulationInflux (economy-engineer) — причинный порог attractiveness + вызов spawnStalker + леджер item/broughtIn.
