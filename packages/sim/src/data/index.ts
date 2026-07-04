@@ -33,8 +33,10 @@ import type {
   ItemKind,
   SpeciesData,
   FactionData,
+  FactionRelation,
   ProfessionData,
   NamesData,
+  SettlementData,
 } from '@zona/shared';
 
 import mapRaw from './map.json';
@@ -43,6 +45,7 @@ import speciesRaw from './species.json';
 import namesRaw from './names.json';
 import factionsRaw from './factions.json';
 import professionsRaw from './professions.json';
+import settlementsRaw from './settlements.json';
 
 /** Ошибка валидации/связности контента. Бросается при загрузке модуля. */
 export class DataError extends Error {
@@ -198,6 +201,114 @@ function validateIdNameList(data: unknown, key: string, label: string): readonly
   return list;
 }
 
+// ── Валидация матрицы отношений фракций (закон №10) ──────────────────────────
+
+/** Границы шкалы отношений (D-046 контекст: −100 враг … +100 союзник). */
+const RELATION_MIN = -100;
+const RELATION_MAX = 100;
+
+/** Канонический ключ неупорядоченной пары фракций (сорт. по id — детерминизм). */
+function relationKey(a: string, b: string): string {
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
+}
+
+/**
+ * Валидирует `factions.json.relations`: каждое ребро ссылается на СУЩЕСТВУЮЩИЕ id
+ * (резолвятся в `validIds`), `a !== b` (петля-отношение не хранится, подразумевается
+ * максимум), `value ∈ [−100, 100]`, и НЕТ дублей по неупорядоченной паре (симметрия:
+ * `rel(a,b) === rel(b,a)` ⇒ обратное ребро было бы избыточным/противоречивым). Порядок
+ * `a`/`b` в JSON произволен — канонизируется ключом (закон №8). Возвращает исходный
+ * список (порядок сохранён для стабильности снапшота контента).
+ */
+function validateFactionRelations(
+  data: unknown,
+  validIds: ReadonlySet<string>,
+): readonly FactionRelation[] {
+  assert(data !== null && typeof data === 'object', 'factions.json: не объект');
+  const arr = (data as { relations?: unknown }).relations;
+  assert(Array.isArray(arr), 'factions.json: relations должен быть массивом');
+  const relations = arr as FactionRelation[];
+  const seen = new Set<string>();
+  relations.forEach((r, i) => {
+    assert(typeof r.a === 'string' && validIds.has(r.a), `relations #${i}: неизвестная фракция a="${r.a}"`);
+    assert(typeof r.b === 'string' && validIds.has(r.b), `relations #${i}: неизвестная фракция b="${r.b}"`);
+    assert(r.a !== r.b, `relations #${i}: отношение фракции "${r.a}" с собой не хранится`);
+    assert(inRange(r.value, RELATION_MIN, RELATION_MAX), `relations #${i}: value ${r.value} вне [${RELATION_MIN},${RELATION_MAX}]`);
+    const key = relationKey(r.a, r.b);
+    assert(!seen.has(key), `relations #${i}: дубль пары ${key} (отношение симметрично)`);
+    seen.add(key);
+  });
+  return relations;
+}
+
+// ── Валидация поселений (закон №10) ──────────────────────────────────────────
+
+/**
+ * Валидирует `settlements.json`: каждое поселение стоит на РЕАЛЬНОЙ локации-
+ * поселении (`map.locations[loc].type === 'settlement'` — связность с картой),
+ * владеющая `faction` резолвится, `shelterBase ∈ [0,10]`, подушевое потребление
+ * неотрицательно, каждый рецепт ссылается на существующие itemId (`out` и все
+ * `in.item`) с `qty>0` целым и `labor>0`, `buildQueue` — непустые строки, стартовый
+ * склад — существующие itemId с целыми `qty>0` (закон №3), `startingTreasury >= 0`.
+ * `loc` уникален (одно поселение на локацию). `resolveItem`/`resolveFaction` —
+ * инъекция резолверов (модульные `getItem`/`getFaction` объявлены ниже по файлу).
+ */
+function validateSettlements(
+  data: unknown,
+  locCount: number,
+  locType: (loc: number) => string | undefined,
+  itemExists: (id: string) => boolean,
+  factionExists: (id: string) => boolean,
+): readonly SettlementData[] {
+  assert(data !== null && typeof data === 'object', 'settlements.json: не объект');
+  const arr = (data as { settlements?: unknown }).settlements;
+  assert(Array.isArray(arr), 'settlements.json: settlements должен быть массивом');
+  const settlements = arr as SettlementData[];
+  assert(settlements.length > 0, 'settlements.json: список пуст');
+  const seenLoc = new Set<number>();
+  settlements.forEach((s, i) => {
+    assert(Number.isInteger(s.loc) && s.loc >= 0 && s.loc < locCount, `поселение #${i}: loc=${s.loc} вне диапазона локаций`);
+    assert(!seenLoc.has(s.loc), `поселение #${i}: дубль loc=${s.loc} (одно поселение на локацию)`);
+    seenLoc.add(s.loc);
+    // СВЯЗНОСТЬ С КАРТОЙ (D-025): поселение обязано стоять на type==='settlement'.
+    assert(locType(s.loc) === 'settlement', `поселение loc=${s.loc}: локация не type 'settlement' (а '${locType(s.loc)}')`);
+    assert(factionExists(s.faction), `поселение loc=${s.loc}: неизвестная фракция "${s.faction}"`);
+    assert(inRange(s.shelterBase, 0, 10), `поселение loc=${s.loc}: shelterBase ${s.shelterBase} вне [0,10]`);
+    // Потребление.
+    assert(s.consumption !== null && typeof s.consumption === 'object', `поселение loc=${s.loc}: нет consumption`);
+    const pc = s.consumption.perCapita;
+    assert(pc !== null && typeof pc === 'object', `поселение loc=${s.loc}: нет consumption.perCapita`);
+    assert(typeof pc.food === 'number' && pc.food >= 0, `поселение loc=${s.loc}: perCapita.food < 0`);
+    assert(typeof pc.water === 'number' && pc.water >= 0, `поселение loc=${s.loc}: perCapita.water < 0`);
+    // Рецепты (itemId существуют, закон №3).
+    assert(Array.isArray(s.recipes), `поселение loc=${s.loc}: recipes не массив`);
+    s.recipes.forEach((r, ri) => {
+      assert(itemExists(r.out), `поселение loc=${s.loc} рецепт #${ri}: неизвестный out "${r.out}"`);
+      assert(typeof r.labor === 'number' && r.labor > 0, `поселение loc=${s.loc} рецепт #${ri}: labor должен быть >0`);
+      assert(Array.isArray(r.in) && r.in.length > 0, `поселение loc=${s.loc} рецепт #${ri}: пустой in`);
+      r.in.forEach((ing: { item: string; qty: number }, ii: number) => {
+        assert(itemExists(ing.item), `поселение loc=${s.loc} рецепт #${ri} in #${ii}: неизвестный предмет "${ing.item}"`);
+        assert(Number.isInteger(ing.qty) && ing.qty > 0, `поселение loc=${s.loc} рецепт #${ri} in #${ii}: qty должен быть целым >0`);
+      });
+    });
+    // Очередь стройки (непустые строки-id проектов).
+    assert(Array.isArray(s.buildQueue), `поселение loc=${s.loc}: buildQueue не массив`);
+    s.buildQueue.forEach((p, pi) => assert(typeof p === 'string' && p.length > 0, `поселение loc=${s.loc} buildQueue #${pi}: пустой projectId`));
+    // Стартовый склад (закон №3: реальные предметы, целые qty>0).
+    assert(Array.isArray(s.startingWarehouse) && s.startingWarehouse.length > 0, `поселение loc=${s.loc}: пустой startingWarehouse`);
+    const seenItem = new Set<string>();
+    s.startingWarehouse.forEach((w, wi) => {
+      assert(itemExists(w.item), `поселение loc=${s.loc} склад #${wi}: неизвестный предмет "${w.item}"`);
+      assert(!seenItem.has(w.item), `поселение loc=${s.loc} склад #${wi}: дубль предмета "${w.item}"`);
+      seenItem.add(w.item);
+      assert(Number.isInteger(w.qty) && w.qty > 0, `поселение loc=${s.loc} склад #${wi}: qty должен быть целым >0`);
+    });
+    // Касса.
+    assert(typeof s.startingTreasury === 'number' && Number.isFinite(s.startingTreasury) && s.startingTreasury >= 0, `поселение loc=${s.loc}: startingTreasury должен быть >=0`);
+  });
+  return settlements;
+}
+
 // ── Валидация имён ──────────────────────────────────────────────────────────
 
 /** Минимум имён/фамилий для приемлемого разнообразия NPC (закон №4). */
@@ -243,6 +354,15 @@ export const PROFESSIONS: readonly ProfessionData[] = deepFreeze(
   validateIdNameList(professionsRaw, 'professions', 'professions') as readonly ProfessionData[],
 );
 
+/**
+ * Валидированная и замороженная матрица отношений фракций (Фаза 2, закон №10).
+ * Хранит по одному ребру на неупорядоченную пару; отношение симметрично (см.
+ * `getRelation`). Резолвится против id из FACTIONS.
+ */
+export const RELATIONS: readonly FactionRelation[] = deepFreeze(
+  validateFactionRelations(factionsRaw, new Set(FACTIONS.map((f) => f.id))),
+);
+
 // ── Индексы для O(1)/детерминированного доступа ──────────────────────────────
 
 /**
@@ -266,6 +386,32 @@ const FACTION_BY_ID: ReadonlyMap<string, FactionData> = new Map(FACTIONS.map((f)
 /** id профессии → ProfessionData. */
 const PROFESSION_BY_ID: ReadonlyMap<string, ProfessionData> = new Map(
   PROFESSIONS.map((p) => [p.id, p]),
+);
+
+/**
+ * Валидированный и замороженный список поселений (Фаза 2, закон №10). Резолверы
+ * инъектируются как замыкания над уже загруженными данными: `map.locations[loc].type`,
+ * членство itemId в `ITEM_BY_ID`, членство фракции в `FACTION_BY_ID`. Так валидатор
+ * не тянет ещё-не-объявленные `getItem`/`getFaction` (объявлены ниже по файлу).
+ */
+export const SETTLEMENTS: readonly SettlementData[] = deepFreeze(
+  validateSettlements(
+    settlementsRaw,
+    MAP.locations.length,
+    (loc) => MAP.locations[loc]?.type,
+    (id) => ITEM_BY_ID.has(id),
+    (id) => FACTION_BY_ID.has(id),
+  ),
+);
+
+/** loc поселения → SettlementData. */
+const SETTLEMENT_BY_LOC: ReadonlyMap<number, SettlementData> = new Map(
+  SETTLEMENTS.map((s) => [s.loc, s]),
+);
+
+/** Каноническая пара фракций → value отношения (симметрично, детерминизм ключа). */
+const RELATION_BY_PAIR: ReadonlyMap<string, number> = new Map(
+  RELATIONS.map((r) => [relationKey(r.a, r.b), r.value]),
 );
 
 function buildAdjacency(map: MapData): LocationId[][] {
@@ -341,6 +487,32 @@ export function getProfession(id: string): ProfessionData {
   const p = PROFESSION_BY_ID.get(id);
   assert(p !== undefined, `getProfession: неизвестная профессия "${id}"`);
   return p;
+}
+
+/** Все поселения (в порядке файла settlements.json). Иммутабельны. */
+export function getSettlements(): readonly SettlementData[] {
+  return SETTLEMENTS;
+}
+
+/**
+ * Поселение по id локации. Возвращает undefined, если на локации нет поселения
+ * (не всякая локация — поселение). Потребитель (worldgen) сам решает, ошибка это
+ * или норма.
+ */
+export function getSettlement(loc: number): SettlementData | undefined {
+  return SETTLEMENT_BY_LOC.get(loc);
+}
+
+/**
+ * Отношение фракций `a` и `b` (симметрично: `getRelation(a,b) === getRelation(b,a)`).
+ * Отношение фракции с собой — `RELATION_MAX` (свои всегда «союзники»). Пара без явной
+ * записи в матрице трактуется как нейтралитет (0). Бросает на неизвестном id (закон №10).
+ */
+export function getRelation(a: string, b: string): number {
+  assert(FACTION_BY_ID.has(a), `getRelation: неизвестная фракция "${a}"`);
+  assert(FACTION_BY_ID.has(b), `getRelation: неизвестная фракция "${b}"`);
+  if (a === b) return RELATION_MAX;
+  return RELATION_BY_PAIR.get(relationKey(a, b)) ?? 0;
 }
 
 /**

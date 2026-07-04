@@ -27,6 +27,8 @@ import { createScheduler, type Scheduler } from '../core/scheduler';
 import { serialize, deserialize, hashSnapshot } from '../core/snapshot';
 import { HEALTH_MAX } from '../balance/needs';
 import { worldgen } from '../worldgen';
+import { STALKER_COUNT } from '../balance/worldgen';
+import { getSettlements } from '../data/index';
 import { Needs as NeedsSystem } from './needs';
 import { Perception } from './perception';
 import { Movement } from './movement';
@@ -226,7 +228,9 @@ describe('0 idle: каждый живой Human получает валидны�
     taskScheduler().run(w, 3);
 
     const humans = queryEntities(w.ecs, [Human, Alive]);
-    expect(humans.length).toBe(20);
+    // 20 сталкеров + по торговцу на поселение (2.2) — торговцы тоже Human+Alive и
+    // ТОЖЕ получают Task (не idle, закон №4/D-020).
+    expect(humans.length).toBe(STALKER_COUNT + getSettlements().length);
     const validKinds = new Set<number>(Object.values(TaskKind));
     for (const eid of humans) {
       expect(hasComponent(w.ecs, Task, eid)).toBe(true);

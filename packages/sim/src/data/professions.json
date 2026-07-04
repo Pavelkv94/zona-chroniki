@@ -4,6 +4,7 @@
     { "id": "hunter", "name": "Охотник" },
     { "id": "scavenger", "name": "Барахольщик" },
     { "id": "medic", "name": "Санитар" },
-    { "id": "mechanic", "name": "Технарь" }
+    { "id": "mechanic", "name": "Технарь" },
+    { "id": "trader", "name": "Торговец" }
   ]
 }

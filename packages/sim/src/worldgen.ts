@@ -1,10 +1,15 @@
 /**
  * @module @zona/sim/worldgen
  *
- * Стартовая генерация мира (задача 1.3). Вызывается РОВНО ОДИН РАЗ при сборке мира
- * (headless-CLI 1.12), ДО первого тика планировщика. Населяет пустой `SimWorld`
- * сущностью-миром (WorldClock singleton), 20 сталкерами в Кордоне и стадами
- * животных в глубоких диких/руинных локациях.
+ * Стартовая генерация мира (задача 1.3; расширена 2.2). Вызывается РОВНО ОДИН РАЗ
+ * при сборке мира (headless-CLI 1.12), ДО первого тика планировщика. Населяет пустой
+ * `SimWorld` сущностью-миром (WorldClock singleton), 20 сталкерами в Кордоне, стадами
+ * животных в глубоких диких/руинных локациях и (2.2) ПОСЕЛЕНИЯМИ из settlements.json:
+ * каждое — сущность-поселение (Settlement + Position) со стартовым складом ('inventory')
+ * и кассой ('money') + смертный торговец-NPC (D-051). Склад/касса поселения ФИЗИЧЕСКИ
+ * внесены из-за Периметра (D-021/D-045, БАЗЛАЙН t0 — worldgen НЕ эмитит леджер).
+ * Поселения/торговцы генерируются ПОСЛЕДНИМИ (после стад), чтобы не сдвигать поток
+ * rng Фазы 1 (сталкеры/стада тождественны прежним).
  *
  * ── Закон №1 (мир живёт без игрока) ──────────────────────────────────────────
  * Игрока НЕТ. Сталкеры расставляются в ENTRY_LOCATION (Кордон, D-025) — точке
@@ -59,11 +64,13 @@ import {
   Home,
   Animal,
   WorldClock,
+  Settlement,
   Human,
   Alive,
   WEATHER_CODE,
 } from './core/components';
-import { MAP, NAMES, getSpecies } from './data/index';
+import { MAP, NAMES, getSpecies, getSettlements } from './data/index';
+import type { SettlementData } from '@zona/shared';
 import { HEALTH_MAX } from './balance/needs';
 import {
   STALKER_COUNT,
@@ -88,6 +95,9 @@ import {
   STARTING_FATIGUE_MAX,
   SKILL_MIN,
   SKILL_MAX,
+  SETTLEMENT_START_MORALE,
+  SETTLEMENT_START_SECURITY,
+  TRADER_PROFESSION_ID,
 } from './balance/worldgen';
 
 // ── Типизированные проекции SoA-колонок ──────────────────────────────────────
@@ -111,6 +121,12 @@ const SKILL = Skills as unknown as {
 const HOME = Home as unknown as { loc: Uint32Array };
 const ANIMAL = Animal as unknown as { species: Uint8Array; herd: Uint32Array };
 const CLOCK = WorldClock as unknown as { weather: Uint8Array; weatherSince: Uint32Array };
+const SETTLE = Settlement as unknown as {
+  morale: Float32Array;
+  security: Float32Array;
+  buildTarget: Uint8Array;
+  buildProgress: Float32Array;
+};
 
 /** Запись имени сталкера в ResourceStore (D-007). first/last непусты (закон №4). */
 interface NameRecord {
@@ -135,12 +151,19 @@ interface InventoryEntry {
  */
 export function worldgen(world: SimWorld): void {
   // ЕДИНЫЙ детерминированный подпоток генерации (D-004/D-021). Потребляется строго
-  // в порядке ниже: мир → сталкеры → стада. Любая перестановка сломала бы seed→мир.
+  // в порядке ниже: мир → сталкеры → стада → поселения+торговцы. Любая перестановка
+  // сломала бы seed→мир.
+  //
+  // ПОРЯДОК (задача 2.2): поселения/торговцы генерируются ПОСЛЕДНИМИ — так добавление
+  // Фазы 2 НЕ сдвигает поток rng сталкеров/стад Фазы 1 (их eid/имена/позиции/стада
+  // тождественны прежним); новыми в мире оказываются лишь сущности-поселения и
+  // торговцы, дописанные в конец. Стабильность зафиксирована тестом детерминизма.
   const rng = world.rng.fork('worldgen');
 
   spawnWorldClock(world);
   spawnStalkers(world, rng);
   spawnHerds(world, rng);
+  spawnSettlements(world, rng);
 }
 
 // ── Сущность-мир: WorldClock singleton ───────────────────────────────────────
@@ -340,4 +363,128 @@ function spawnAnimal(
   ANIMAL.herd[eid] = herd;
 
   addComponent(world.ecs, Alive, eid);
+}
+
+// ── Поселения и торговцы (Фаза 2, задача 2.2) ────────────────────────────────
+
+/**
+ * Заселяет поселения из settlements.json (закон №10). Для КАЖДОГО поселения (обход
+ * в порядке файла — детерминирован):
+ *  1) сущность-поселение: Settlement(morale/security из balance; buildTarget/
+ *     buildProgress=0 занулением addComponent, D-024) + Position(стоит на своей loc,
+ *     dest===loc — чтобы систему/торговцев можно было локализовать);
+ *  2) СКЛАД: cold 'inventory' на eid поселения — стартовый набор со склада (закон №3
+ *     ИСТОЧНИК: внесено из-за Периметра при основании, D-021/D-045; часть БАЗЛАЙНА
+ *     t0, worldgen НЕ эмитит леджер, D-045). КАССА: cold 'money' = startingTreasury.
+ *     Оба ключа — те же, что у NPC/трупов (D-046) ⇒ учитываются EconomyInvariant.
+ *  3) ТОРГОВЕЦ: смертный Human-NPC на loc поселения (D-051) — обычный сталкер по
+ *     контракту (Position/Needs<критич./Health/Skills/Home/Human/Alive + холодные
+ *     имя/фракция(поселения)/профессия 'trader'/личные деньги+инвентарь), но БЕЗ
+ *     Task (назначит TaskSelection на первом тике, D-020 — торговец не idle).
+ *
+ * Поселение — НЕ Alive и НЕ Human: инертно для АКТОРНЫХ систем Фазы 1
+ * (Movement/Needs/Death/TaskSelection/Encounters/Animals его пропускают — нет
+ * Task/Needs/Alive/Animal; проверено QA: 0 из 47 encounter/* за 30 дней ссылаются
+ * на поселение, оно не движется). ИСКЛЮЧЕНИЕ: у поселения ЕСТЬ Position, поэтому
+ * Perception (обходит всех носителей Position) включает его в бакет локации как
+ * ПАССИВНЫЙ контакт — публикуются perception/spotted с ним. Это БЕЗВРЕДНО (ни один
+ * потребитель contacts не трактует поселение как цель/угрозу: страх требует
+ * co-located Animal, бои — Human/Animal), но создаёт семантический шум в логе
+ * («поселение заметило сталкера»). Кандидат на гейт Perception по актёрам
+ * (Human/Animal) — будущая правка (актуально с ростом не-акторных Position-носителей:
+ * аномальные поля 2.9). Склад/касса статичны до Economy 2.3.
+ */
+function spawnSettlements(world: SimWorld, rng: Rng): void {
+  // Полные имена торговцев не дублируются МЕЖДУ собой (общий Set на все поселения);
+  // совпадение с именем сталкера допустимо (однофамильцы, как в spawnStalkers).
+  const traderNames = new Set<string>();
+  // getSettlements() отдаёт список в порядке файла (детерминирован, закон №8).
+  for (const s of getSettlements()) {
+    const eid = spawnEntity(world.ecs);
+
+    // Settlement: стартовые мораль/защита (balance); buildTarget/buildProgress=0.
+    addComponent(world.ecs, Settlement, eid);
+    SETTLE.morale[eid] = SETTLEMENT_START_MORALE;
+    SETTLE.security[eid] = SETTLEMENT_START_SECURITY;
+    // buildTarget/buildProgress уже занулены addComponent (D-024) — ничего не строит.
+
+    // Position: поселение «стоит» на своей локации (dest===loc, D-019).
+    addComponent(world.ecs, Position, eid);
+    POS.loc[eid] = s.loc;
+    POS.dest[eid] = s.loc;
+    POS.etaTicks[eid] = 0;
+
+    // СКЛАД + КАССА (D-046, БАЗЛАЙН t0). Свежая отсортированная копия склада
+    // (не делим ссылку с data — Economy 2.3 будет менять его in-place, закон №3/№8).
+    world.resources.set<readonly InventoryEntry[]>('inventory', eid, buildWarehouse(s));
+    world.resources.set<number>('money', eid, s.startingTreasury);
+
+    spawnTrader(world, rng, s, traderNames);
+  }
+}
+
+/**
+ * Строит СВЕЖУЮ отсортированную по itemId копию стартового склада поселения (новый
+ * массив + новые {item,qty}) из settlements.json. Сортировка по itemId — стабильный
+ * канон снапшота (закон №8). Все itemId валидны (проверено загрузчиком data). Источник
+ * — «внесено из-за Периметра» (D-021/D-045). Отдельная копия на поселение: будущая
+ * экономика (2.3) расходует склад in-place, не задевая контент-данные (закон №3).
+ */
+function buildWarehouse(s: SettlementData): InventoryEntry[] {
+  return s.startingWarehouse
+    .map((w) => ({ item: w.item as ItemId, qty: w.qty }))
+    .sort((a, b) => (a.item < b.item ? -1 : a.item > b.item ? 1 : 0));
+}
+
+/**
+ * Создаёт торговца поселения `s` — смертного Human-NPC на loc поселения (D-051).
+ * Контракт идентичен сталкеру (spawnStalkers), кроме: профессия 'trader', фракция —
+ * фракция поселения (`s.faction`), Home — loc поселения. Личные деньги/инвентарь —
+ * «как у сталкера» (STARTING_MONEY/STARTING_INVENTORY, внесено из-за Периметра,
+ * D-021); склад/касса ПОСЕЛЕНИЯ — на отдельном eid (spawnSettlements). Task НЕ
+ * ставится (назначит TaskSelection, D-020 — торговец живёт как обычный NPC до 2.6).
+ */
+function spawnTrader(
+  world: SimWorld,
+  rng: Rng,
+  s: SettlementData,
+  usedNames: Set<string>,
+): void {
+  const eid = spawnEntity(world.ecs);
+
+  addComponent(world.ecs, Position, eid);
+  POS.loc[eid] = s.loc;
+  POS.dest[eid] = s.loc;
+  POS.etaTicks[eid] = 0;
+
+  // Needs: строго ниже критических порогов (D-027; тот же безопасный диапазон, что у
+  // сталкеров) — торговец не начинает истощаться с тика 0.
+  addComponent(world.ecs, Needs, eid);
+  NEED.hunger[eid] = rng.range(STARTING_HUNGER_MIN, STARTING_HUNGER_MAX);
+  NEED.thirst[eid] = rng.range(STARTING_THIRST_MIN, STARTING_THIRST_MAX);
+  NEED.fatigue[eid] = rng.range(STARTING_FATIGUE_MIN, STARTING_FATIGUE_MAX);
+  NEED.fear[eid] = 0;
+
+  addComponent(world.ecs, Health, eid);
+  HP.hp[eid] = HEALTH_MAX;
+
+  addComponent(world.ecs, Skills, eid);
+  SKILL.shooting[eid] = rng.range(SKILL_MIN, SKILL_MAX);
+  SKILL.survival[eid] = rng.range(SKILL_MIN, SKILL_MAX);
+  SKILL.stealth[eid] = rng.range(SKILL_MIN, SKILL_MAX);
+
+  // Home — поселение (торговец при своём поселении).
+  addComponent(world.ecs, Home, eid);
+  HOME.loc[eid] = s.loc;
+
+  addComponent(world.ecs, Human, eid);
+  addComponent(world.ecs, Alive, eid);
+
+  const name = pickName(rng, usedNames);
+  world.resources.set<NameRecord>('name', eid, name);
+  // Фракция торговца = фракция поселения (закон №10, резолвится в factions.json).
+  world.resources.set<FactionId>('faction', eid, s.faction as FactionId);
+  world.resources.set<string>('profession', eid, TRADER_PROFESSION_ID);
+  world.resources.set<number>('money', eid, STARTING_MONEY);
+  world.resources.set<readonly InventoryEntry[]>('inventory', eid, buildStartingInventory());
 }

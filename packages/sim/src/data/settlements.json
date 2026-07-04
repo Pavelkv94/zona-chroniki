@@ -1,0 +1,42 @@
+{
+  "settlements": [
+    {
+      "loc": 0,
+      "faction": "loners",
+      "shelterBase": 9,
+      "consumption": { "perCapita": { "food": 1.0, "water": 1.0 } },
+      "recipes": [
+        { "out": "canned", "in": [{ "item": "meat", "qty": 1 }], "labor": 3 }
+      ],
+      "buildQueue": ["watchtower"],
+      "startingWarehouse": [
+        { "item": "canned", "qty": 40 },
+        { "item": "bread", "qty": 30 },
+        { "item": "water", "qty": 50 },
+        { "item": "ammo_9mm", "qty": 300 },
+        { "item": "bandage", "qty": 25 },
+        { "item": "pm", "qty": 3 }
+      ],
+      "startingTreasury": 15000
+    },
+    {
+      "loc": 5,
+      "faction": "duty",
+      "shelterBase": 8,
+      "consumption": { "perCapita": { "food": 1.0, "water": 1.0 } },
+      "recipes": [
+        { "out": "canned", "in": [{ "item": "meat", "qty": 1 }], "labor": 3 }
+      ],
+      "buildQueue": ["barracks"],
+      "startingWarehouse": [
+        { "item": "canned", "qty": 30 },
+        { "item": "bread", "qty": 25 },
+        { "item": "water", "qty": 40 },
+        { "item": "ammo_9mm", "qty": 500 },
+        { "item": "bandage", "qty": 30 },
+        { "item": "pm", "qty": 5 }
+      ],
+      "startingTreasury": 20000
+    }
+  ]
+}

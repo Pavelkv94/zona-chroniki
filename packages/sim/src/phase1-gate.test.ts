@@ -37,7 +37,15 @@ import { serialize, deserialize, hashSnapshot } from './core/snapshot';
 import { queryEntities, hasComponent, allEntities } from './core/ecs';
 import { Human, Alive, Animal, Task, Needs, Position } from './core/components';
 import { TICKS_PER_DAY } from './balance/time';
-import { edgeLen, SPECIES } from './data/index';
+import { edgeLen, SPECIES, getSettlements } from './data/index';
+import { STALKER_COUNT } from './balance/worldgen';
+
+/**
+ * Стартовое число живых людей мира = 20 сталкеров (Кордон) + по одному торговцу
+ * на поселение (задача 2.2, D-051 — смертный Human-NPC на loc каждого поселения).
+ * Оба — Human+Alive, поэтому оба входят в старт-население гейта.
+ */
+const HUMANS_AT_START = STALKER_COUNT + getSettlements().length;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ПАРАМЕТРЫ ГЕЙТА
@@ -50,9 +58,11 @@ const SEEDS = [42, 7, 999] as const;
  * Пере-закреплён balance-analyst-сессией (Фаза 1, смягчение спирали смерти):
  * e04c0d77 → cb104eca. Пере-закреплён задачей 2.0 (D-045): ретрофит леджера
  * (item/consumed+item/harvested) добавил события в лог → cb104eca → cb104eca
- * (мир НЕ изменился, только длина лога событий).
+ * (мир НЕ изменился, только длина лога событий). Пере-закреплён задачей 2.2:
+ * worldgen добавил 2 поселения (склад/касса) + 2 торговца — новые носители в мире
+ * и 2 лишних актёра сдвигают общий поток world.rng → cb104eca → 70e9e546.
  */
-const GOLDEN_DAY1_SEED42 = 'cb104eca';
+const GOLDEN_DAY1_SEED42 = '70e9e546';
 /** Максимальный выход мяса с одной туши среди видов — верхняя граница «мясо с туш». */
 const MAX_MEAT_YIELD = Math.max(...SPECIES.map((s) => s.meatYield));
 
@@ -360,8 +370,8 @@ describe('MUST · 0 idle: за 10 дней ни один живой сталке
         expect(p.needsViolations).toEqual([]);
       });
 
-      it('мир реально жил: сталкеры стартовали и события шли', () => {
-        expect(p.humansStart).toBe(20);
+      it('мир реально жил: сталкеры/торговцы стартовали и события шли', () => {
+        expect(p.humansStart).toBe(HUMANS_AT_START); // 20 сталкеров + торговцы (2.2)
         expect(p.log.length).toBeGreaterThan(1000);
       });
     });

@@ -1,5 +1,16 @@
 {
   "factions": [
-    { "id": "loners", "name": "Одиночки" }
+    { "id": "loners", "name": "Одиночки" },
+    { "id": "military", "name": "Военные" },
+    { "id": "duty", "name": "Долг" },
+    { "id": "bandits", "name": "Бандиты" }
+  ],
+  "relations": [
+    { "a": "loners", "b": "military", "value": -10 },
+    { "a": "loners", "b": "duty", "value": 20 },
+    { "a": "bandits", "b": "loners", "value": -40 },
+    { "a": "duty", "b": "military", "value": -30 },
+    { "a": "bandits", "b": "military", "value": -60 },
+    { "a": "bandits", "b": "duty", "value": -100 }
   ]
 }

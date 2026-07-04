@@ -117,11 +117,94 @@ export interface SpeciesData {
 /**
  * Запись фракции (`factions.json`, закон №10 — фракции это КОНТЕНТ). `id` —
  * абстрактная ссылка (совпадает с `FactionId`), `name` — атмосферное имя. Фаза 1
- * несёт одну фракцию (одиночки); множественные фракции/отношения — поздняя фаза.
+ * несла одну фракцию (одиночки); Фаза 2 (задача 2.2) добавляет military/duty/bandits
+ * и матрицу отношений (`FactionRelation`).
  */
 export interface FactionData {
   readonly id: string;
   readonly name: string;
+}
+
+/**
+ * Ребро матрицы отношений фракций (`factions.json.relations`, закон №10). Хранится
+ * ОДИН раз на неупорядоченную пару (канон `a < b` по id) — отношение симметрично
+ * (`rel(a,b) === rel(b,a)`), поэтому дублировать обратное ребро незачем. `value` —
+ * знаковая шкала [−100..+100]: <0 враждебность, 0 нейтралитет, >0 союзность.
+ * Отношение фракции с собой не хранится (подразумевается максимум). `a`/`b` — id
+ * из списка `factions` (валидатор проверяет резолвимость).
+ */
+export interface FactionRelation {
+  readonly a: string;
+  readonly b: string;
+  readonly value: number;
+}
+
+/**
+ * Корневая структура `factions.json` (закон №10): список фракций + матрица
+ * отношений. Загрузчик валидирует резолвимость id/симметрию/диапазон и замораживает.
+ */
+export interface FactionsData {
+  readonly factions: readonly FactionData[];
+  readonly relations: readonly FactionRelation[];
+}
+
+/**
+ * Единица стартового склада/рецепта поселения: ссылка на предмет + количество
+ * (закон №3 — предмет реален, itemId существует в items.json). Целое qty>0.
+ */
+export interface SettlementItemQty {
+  readonly item: string;
+  readonly qty: number;
+}
+
+/**
+ * Рецепт производства поселения (`settlements.json`, данные для Economy 2.3): из
+ * входного сырья `in` (список предмет+кол-во) за `labor` человеко-тиков труда
+ * рождается `out` (готовый предмет). В Фазе 2/2.2 это лишь КОНТЕНТ-данные —
+ * материализацию с событием-источником (`item/produced`) делает система 2.3.
+ * Все itemId (`out` и каждый `in.item`) существуют в items.json (валидатор).
+ */
+export interface SettlementRecipe {
+  readonly out: string;
+  readonly in: readonly SettlementItemQty[];
+  readonly labor: number;
+}
+
+/** Подушевое потребление поселения (данные для Economy 2.3): еда/вода на жителя. */
+export interface SettlementConsumption {
+  readonly perCapita: {
+    readonly food: number;
+    readonly water: number;
+  };
+}
+
+/**
+ * Запись поселения (`settlements.json`, закон №10 — поселения это КОНТЕНТ). `loc` —
+ * id локации-поселения (валидатор требует `map.locations[loc].type === 'settlement'`),
+ * `faction` — id владеющей фракции (резолвится в factions.json). `shelterBase` —
+ * базовое укрытие 0..10. `consumption`/`recipes`/`buildQueue` — данные экономики
+ * поселения (потребление/производство/очередь стройки) для систем Фазы 2 (2.3).
+ *
+ * ── Закон №3: ИСТОЧНИК стартового склада/кассы ──────────────────────────────
+ * `startingWarehouse` (предметы) и `startingTreasury` (деньги) ФИЗИЧЕСКИ ВНЕСЕНЫ
+ * ИЗ-ЗА ПЕРИМЕТРА при основании поселения (D-021/D-045) — внешний источник, часть
+ * БАЗЛАЙНА экономики t0 (worldgen НЕ эмитит леджер для них, D-045). Каждый
+ * itemId склада/рецепта существует в items.json.
+ */
+export interface SettlementData {
+  readonly loc: number;
+  readonly faction: string;
+  readonly shelterBase: number;
+  readonly consumption: SettlementConsumption;
+  readonly recipes: readonly SettlementRecipe[];
+  readonly buildQueue: readonly string[];
+  readonly startingWarehouse: readonly SettlementItemQty[];
+  readonly startingTreasury: number;
+}
+
+/** Корневая структура `settlements.json` (закон №10). */
+export interface SettlementsData {
+  readonly settlements: readonly SettlementData[];
 }
 
 /**
