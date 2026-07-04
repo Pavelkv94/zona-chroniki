@@ -55,6 +55,7 @@
  */
 
 import type { EntityId, EventId, ItemId, LocationId, Tick } from './ids';
+import type { Subject } from './memory';
 
 /**
  * Вид физиологической нужды (дискриминант в `needs/threshold`). Совпадает с
@@ -523,4 +524,37 @@ export type SimEvent =
        * (какая привлекательность и вклад слагаемых довели до порога, D-030) для летописи.
        */
       payload: { readonly eid: EntityId; readonly loc: LocationId; readonly reason: string };
+    })
+  | (SimEventBase & {
+      type: 'chronicle/recorded';
+      /**
+       * Значимое событие мира ВНЕСЕНО в летопись (задача 3.2, система Chronicle, D-068).
+       * Публикуется РЕАКТИВНО на закоммиченный прошлый тик: Chronicle читает `bus.at(tick−1)`,
+       * оценивает `significance(ev, world)` (чистая функция 3.1/D-067) и, если та
+       * `>= CHRONICLE_THRESHOLD` (balance/narrative, закон №7), эмитит ЭТО событие. Летопись
+       * НЕ хранится отдельно (нет своего стора): она = read-time фильтр лога по
+       * `chronicle/recorded` (хелпер `chronicle(bus)`), поэтому запись — обычное событие
+       * шины, а не мутация состояния. `eventId` — id ЗНАЧИМОГО события-первопричины (та же
+       * величина, что `causedBy`: само значимое событие есть причина своей записи, D-030). `day`
+       * выведен из `ev.tick` (`Math.floor(tick / TICKS_PER_DAY)`, 0-based: day 0 — первый день) для
+       * строки «День N: …» (GDD §10.2). `significance` — оценка ∈ [0..1] (несётся для UI/анализа,
+       * не пересчитывается на чтении). `kind` — ТИП исходного события (`ev.type`), по нему read-time
+       * рендер соберёт летописную строку. `subjects` — участники записи, закодированные как `Subject`
+       * (кодировка memory.ts 2.15: `"e:<eid>"` для сущностей; encoding поддерживает и `"f:<faction>"`,
+       * но текущие payload'ы несут только eid), отсортированы/уникальны для детерминизма (закон №8).
+       * `loc` — локация исходного события, если оно её несёт (иначе опущено). `templateId` —
+       * ОПЦИОНАЛЕН и в 3.2 НЕ ставится: выбор шаблона летописной строки отложен в Radio 3.5
+       * (seeded-выбор из пула), read-time рендер собирает строку по `kind` + `subjects`. Запись
+       * НЕ творит массу/деньги (закон №3): нарративное событие, EconomyInvariant (D-045) его не
+       * видит. `causedBy = eventId` (значимое событие → его запись, закон №6).
+       */
+      payload: {
+        readonly eventId: EventId;
+        readonly day: number;
+        readonly significance: number;
+        readonly kind: string;
+        readonly subjects: readonly Subject[];
+        readonly loc?: LocationId;
+        readonly templateId?: string;
+      };
     });

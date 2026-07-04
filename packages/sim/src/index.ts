@@ -205,3 +205,15 @@ export type {
 } from './narrative/render';
 export { MESSAGES, getTemplate, getTemplatePool } from './data/index';
 export type { MessagesData, MessageTemperament } from '@zona/shared';
+
+// Система Chronicle (3.2, D-068): ЛЕТОПИСЬ МИРА без отдельного стора — РЕАКТИВНО (bus.at(tick−1),
+// закон №6, как RobberyMemory) метит значимые события прошлого тика записью `chronicle/recorded`
+// (significance >= CHRONICLE_THRESHOLD, balance/narrative) с causedBy = id значимого события и
+// поднимает fame субъектам (FAME_PER_CHRONICLE) — запуск обратной связи §10.2. Летопись/раскрутка
+// причин — read-time хелперы `chronicle(bus)` / `unrollCauses(bus, id)` (фильтр лога, состояния не
+// держат ⇒ resume-safe). НЕ в конвейере до 3.7 (батч сдвига голденов + fame-петли) ⇒ голдены Фазы 3
+// не двигаются; EconomyInvariant не затронут ('fame' дизъюнктен money/inventory, D-067).
+export { Chronicle, chronicle, unrollCauses } from './systems/chronicle';
+export type { ChronicleEntry } from './systems/chronicle';
+export { CHRONICLE_THRESHOLD, FAME_PER_CHRONICLE } from './balance/narrative';
+export { participantsOf } from './narrative/significance';

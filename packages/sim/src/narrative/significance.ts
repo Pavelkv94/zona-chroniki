@@ -146,9 +146,11 @@ function maxParticipantFame(world: SimWorld, participants: readonly EntityId[]):
 
 /**
  * Участники события (чьё `fame` масштабирует значимость) — извлекаются из payload по типу.
- * Служебные/шумовые типы участников не имеют ⇒ пустой список (значимость = базовый вес).
+ * Служебные/шумовые типы участников не имеют ⇒ пустой список (значимость = базовый вес). Это
+ * же множество Chronicle (3.2/D-068) берёт СУБЪЕКТАМИ летописной записи и на каждого поднимает
+ * `fame` — единый источник истины «кто участвует в событии» (без дублирования switch'а).
  */
-function participantsOf(ev: SimEvent): readonly EntityId[] {
+export function participantsOf(ev: SimEvent): readonly EntityId[] {
   switch (ev.type) {
     case 'entity/died':
       return ev.payload.killer !== undefined ? [ev.payload.eid, ev.payload.killer] : [ev.payload.eid];
