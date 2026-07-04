@@ -82,3 +82,8 @@ export { TaskKind } from './core/components';
 
 // Сериализация read-path для resume-прогонов CLI (save/load через весь конвейер).
 export type { SimEvent } from '@zona/shared';
+
+// Система Economy (2.3): жизнь поселений (потребление/производство/стройка/мораль).
+// НЕ входит в registerPhase1Systems (подключит 2.16) — экспортируется как System,
+// чтобы её можно было прогнать в отдельном планировщике (headless-инвариант 2.3).
+export { Economy } from './systems/economy';

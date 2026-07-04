@@ -68,11 +68,13 @@ export type NeedKind = 'hunger' | 'thirst' | 'fatigue' | 'fear';
 /**
  * Причина расхода предмета в `item/consumed` (задача 2.0, D-045). Именованный
  * union (а не сырая строка) держит леджер читаемым и типобезопасным. Фаза 1
- * эмитит `'eat'` (TaskEffects съел еду) и `'combat'` (Encounters потратил патроны);
- * будущие фазы расширят union (порча/крафт-сырьё/строительство) — форма замёрзла,
- * значения добавляются.
+ * эмитит `'eat'` (TaskEffects съел еду) и `'combat'` (Encounters потратил патроны).
+ * Задача 2.3 (Economy) добавляет `'upkeep'` (поселение проело провизию со склада —
+ * подушевое потребление жителей) и `'production'` (мастерская израсходовала сырьё
+ * рецепта, превратив его в готовый товар — парно к `item/produced`). Форма замёрзла,
+ * значения union'а добавляются APPEND-ONLY по мере появления новых источников расхода.
  */
-export type ItemConsumeReason = 'eat' | 'combat';
+export type ItemConsumeReason = 'eat' | 'combat' | 'upkeep' | 'production';
 
 /**
  * Источник добытого предмета в `item/harvested` (задача 2.0, D-045). Фаза 1 —
@@ -362,4 +364,36 @@ export type SimEvent =
         readonly loc: LocationId;
         readonly items: ReadonlyArray<readonly [ItemId, number]>;
       };
+    })
+  | (SimEventBase & {
+      type: 'settlement/built';
+      /**
+       * Поселение `settlement` ЗАВЕРШИЛО стройку проекта `project` (задача 2.3,
+       * Economy, B5). Наступает детерминированно: `Settlement.buildProgress`
+       * достиг 100% под накопленным трудом работников (`Job.employer === settlement`),
+       * НЕ «X% шанс достроить» (закон №2). После события прогресс сбрасывается и
+       * поселение берёт следующий проект из `buildQueue` (settlements.json). `project`
+       * — строковый id проекта из очереди (контент, закон №10; код оперирует
+       * абстрактным id). `causedBy: null` — завершение стройки есть ЭНДОГЕННЫЙ корень
+       * (порог накопленного труда), как эконом-производство `item/produced` (D-045).
+       * `settlement` — eid поселения (D-046).
+       */
+      payload: { readonly settlement: EntityId; readonly project: string };
+    })
+  | (SimEventBase & {
+      type: 'settlement/abandoned';
+      /**
+       * Поселение `settlement` ПОКИНУТО жителями (задача 2.3, Economy, B5). Наступает
+       * детерминированно: `Settlement.morale` просела до/ниже порога заброшенности
+       * (balance/economy) под ЗАТЯЖНЫМ дефицитом провизии — это следствие СОСТОЯНИЯ
+       * мира (пустеющий склад → голод → падение морали), НЕ «X% шанс распада» (закон
+       * №2). Поселение НЕ удаляется (сущность остаётся носителем Settlement/Position),
+       * но помечается заброшенным (Economy перестаёт его обслуживать) и его работники
+       * теряют `Job`. `reason` — человекочитаемое объяснение (закон объяснимости
+       * решений: какой дефицит и до какой морали довёл), для летописи/лога. `causedBy`
+       * → id ПОСЛЕДНЕГО `item/consumed{reason:'upkeep'}` дефицитного расхода, добившего
+       * мораль (причинная цепочка «дефицит → мораль → заброшено»), либо `null`, если
+       * склад был пуст и расхода-события не возникло. `settlement` — eid (D-046).
+       */
+      payload: { readonly settlement: EntityId; readonly reason: string };
     });
