@@ -142,6 +142,12 @@ function validateItems(data: unknown): readonly ItemData[] {
     ids.add(it.id);
     assert(VALID_ITEM_KINDS.has(it.kind), `предмет "${it.id}": неизвестный kind "${it.kind}"`);
     assert(typeof it.weight === 'number' && it.weight > 0, `предмет "${it.id}": weight должен быть >0`);
+    // basePrice — контент-якорь ценности (задача 2.5, D-047): целый >0 (закон №3:
+    // предмет не может стоить 0/дробно — цена сделки DERIVED из него в priceOf).
+    assert(
+      Number.isInteger(it.basePrice) && it.basePrice > 0,
+      `предмет "${it.id}": basePrice должен быть целым >0`,
+    );
     if (it.kind === 'weapon' || it.kind === 'ammo') {
       assert(typeof it.caliber === 'string' && it.caliber.length > 0, `предмет "${it.id}": ${it.kind} требует caliber`);
     }

@@ -92,3 +92,9 @@ export { Economy } from './systems/economy';
 // профессией. НЕ система и НЕ в конвейере/worldgen (вызовет FactionAI/2.16) —
 // экспортируется как чистая функция, чтобы интеграция Фазы 2 включила наём.
 export { assignJobs } from './systems/job-assign';
+
+// Система Trade (2.5): исполнение сделок NPC↔поселение (перевод, D-047). Цена —
+// DERIVED (priceOf). НЕ входит в registerPhase1Systems (подключит 2.16) — экспорт как
+// System (прогон в отдельном планировщике) + чистая priceOf для тестов/анализа.
+export { Trade } from './systems/trade';
+export { priceOf } from './systems/pricing';

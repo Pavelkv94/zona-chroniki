@@ -396,4 +396,29 @@ export type SimEvent =
        * склад был пуст и расхода-события не возникло. `settlement` — eid (D-046).
        */
       payload: { readonly settlement: EntityId; readonly reason: string };
+    })
+  | (SimEventBase & {
+      type: 'trade/executed';
+      /**
+       * СДЕЛКА исполнена (задача 2.5, система Trade, D-047). `seller` отдал `qty`
+       * единиц `item`, `buyer` заплатил `money` денег — это ПЕРЕВОД (закон №3):
+       * предметы и деньги ФИЗИЧЕСКИ сменили владельца, суммарная масса мира НЕ
+       * изменилась, поэтому событие НЕ леджерится (EconomyInvariant его игнорирует —
+       * денежная/товарная дельта леджера остаётся 0). Одна из сторон — сущность-
+       * поселение (её склад/касса под ключами 'inventory'/'money', D-046), другая —
+       * NPC с Task=TRADE. `price` — ФАКТИЧЕСКАЯ цена ЕДИНИЦЫ, использованная в сделке
+       * (DERIVED из дефицитности склада, `priceOf`, D-047; цена не хранится — несётся
+       * здесь для летописи/анализа), `money === price × qty`. Сделка ДЕТЕРМИНИРОВАНА
+       * (закон №2: цена и решение — функции состояния склада/инвентаря, без rng).
+       * `causedBy` = `Task.causeEvent` NPC (событие `task/selected`, выбравшее TRADE,
+       * D-047/D-030), либо `null`, если причина не проштампована.
+       */
+      payload: {
+        readonly buyer: EntityId;
+        readonly seller: EntityId;
+        readonly item: ItemId;
+        readonly qty: number;
+        readonly price: number;
+        readonly money: number;
+      };
     });
