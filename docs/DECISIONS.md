@@ -1328,3 +1328,51 @@ balance/population.ts во избежание конфликта).
 `37a19d72` неизменен. Затрагивает: systems/population-influx.ts (+тест), balance/population.ts (оба НОВЫЕ),
 shared/events.ts (+union-член `population/arrived`), index.ts (+экспорт PopulationInflux/computeAttractiveness/
 Attractiveness), docs/diagrams/population-influx-2.14.md. ГРАНИЦА С 2.11: НЕ трогал encounters/resolver/combat.
+
+## D-062 | Фаза 2 / задача 2.12 | 2026-07-04
+Решение (TaskSelection учится ВЫБИРАТЬ ROB — детерминированный утилити-грабёж; исполнение — Encounters 2.11,
+D-060): расширяет systems/task-selection.ts БЕЗ нового модуля.
+1) ГЕЙТ АКТЁРА — ДАННЫЕ, НЕ ХАРДКОД (закон №10): ROB выбирают ТОЛЬКО акторы ХИЩНОЙ фракции. Диспозиция —
+   новое опциональное поле `predatory: boolean` в factions.json (у 'bandits' `true`); код читает её через
+   `isPredatoryFaction(id)` (data/index), а НЕ сравнивает id со строкой 'bandits'. worldgen спавнит всех как
+   'loners' (не хищники) ⇒ НИ ОДИН живой NPC не выбирает ROB ⇒ ветка ДРЕМЛЕТ (как SEARCH/ROB-исполнение без
+   актёра): sim:100days `37a19d72` и пустой мир `481914ae` НЕ сдвинуты (подтверждено прогоном + голден-тестами).
+   Не-хищник ⇒ sRob=−∞. Хищные фракции появятся спавном (2.14/2.16).
+2) ROB-UTILITY (D-049, закон №2 — детерминированно из СОСТОЯНИЯ, БЕЗ rng): на ЛУЧШЕЙ видимой жертве
+   `sRob = W.robGain·lootProxy − W.robRisk·targetStrength − W.robRel·relationPenalty` (веса в balance/utility.ts,
+   закон №7: robGain 0.7, robRisk 0.35, robRel 1.0; калибровка lootProxy/strength там же).
+   • lootProxy (АНТИ-ЧИТ D-049) — оценка добычи по НАБЛЮДАЕМОЙ РОЛИ цели: база `ROB_LOOT_BASE` + надбавка
+     `ROB_LOOT_MERCHANT_BONUS`, если профессия цели несёт рабочую задачу торговли (data-driven по professions.json,
+     `MERCHANT_WORK_TASK='trade'`). Функция `lootProxyOf(resources,target)` НАМЕРЕННО НЕ принимает и НЕ читает
+     'inventory' жертвы — бандит не видит чужой карман (доказано тестом: сталкер с ЖИРНЫМ инвентарём НЕ грабится,
+     а бедный ТОРГОВЕЦ той же силы — грабится; решение по роли, не по карману).
+   • targetStrength — НАБЛЮДАЕМАЯ сила: `shooting·ROB_STRENGTH_WEAPON` при ВИДИМОМ оружии (законная наблюдаемость
+     снаряжения, ≠ оценка ценности) + `(hp/HEALTH_MAX)·ROB_STRENGTH_HP` + `allies·ROB_STRENGTH_ALLY`, где allies —
+     co-located живые люди ТОЙ ЖЕ фракции, что цель (кроме неё). Группа → сила↑ → sRob↓ ⇒ бандит ИЗБЕГАЕТ групп,
+     грабит одиночек — ЭМЕРДЖЕНТНО из формулы, без спец-кода (доказано тестом: та же цель грабится в одиночку и НЕ
+     грабится с 2 союзниками).
+   • relationPenalty — из субстрата 2.15 (memory.ts): `max(getRelation(бандит→цель), factionReputation(цель.faction))`.
+     Положительное (союзник/друг) → большой штраф → sRob↓ (не грабить своих); враждебное → штраф<0 → sRob↑.
+   ROB — В ОТЛИЧИЕ от WORK/TRADE/SEARCH — БЕЗ гейта needCalm/safety: грабёж есть стратегия выживания хищника;
+   конкуренцию с голодом/страхом ведут EAT/FLEE своими оценками (испуганный бандит выберет FLEE=1.5·fear).
+3) ЦЕЛЬ (D-026, согласована с гейтом боя Encounters 2.11): жертва берётся из `contacts` бандита (Perception, закон
+   №1 — только воспринятое, не весь мир) и обязана быть co-located СТОЯЩИМ живым человеком НЕ-хищной фракции (тот
+   же гейт, что завяжет бой в encounters.ts: existsEntity+Human+Alive+co-located+dest===loc). `targetEid`=жертва,
+   `targetLoc`=её loc (== loc бандита) ⇒ Movement no-op, бой у стоящего. Нет валидной жертвы ⇒ sRob=−∞. Кандидат
+   `[TaskKind.ROB, sRob]` вставлен МЕЖДУ TRADE(8) и SEARCH(10) — ROB=9, порядок массива по возрастанию кода не
+   нарушен (D-020: argmax строгим `>`, tie→меньший код).
+4) ЗАКОН №1/№6/№8: бандит решает грабить сам по видимым целям без игрока; TaskSelection пишет только Task+
+   `task/selected` (causedBy=null, штамп Task.causeEvent, D-030); rng не участвует; обходы сортированы (контакты
+   по target, союзники по roster queryEntities), tie→меньший eid.
+Альтернативы: (а) хардкод id 'bandits' в коде — ОТКЛОНЕНО (закон №10, диспозиция — контент); (б) lootProxy из
+инвентаря жертвы — ОТКЛОНЕНО (чит-AI, D-049: бандит не видит чужой карман); (в) blanket-агрессия по фракционной
+вражде вместо утилити — ОТКЛОНЕНО (перебила бы мир, обошла «грабёж одиночек», D-060); (г) needCalm-гейт как у
+WORK/TRADE — ОТКЛОНЕНО (грабёж — выживание хищника, не «спокойная подработка»; выживание защищают EAT/FLEE);
+(д) хранить eid поля... н/п. Проверка: typecheck exit 0; npm run test зелёный (1319, +10 ROB-тестов: бандит+одиночка
+→ROB; группа→нет; relationPenalty гасит союзника; анти-чит роль-не-карман; не-бандит→−∞; вне видимости/своего-
+хищника→нет; детерминизм/tie→меньший eid); sim:100days `37a19d72` и пустой мир `481914ae` НЕИЗМЕННЫ.
+Затрагивает: @zona/shared/data.ts (FactionData.predatory), data/factions.json (bandits.predatory), data/index.ts
+(validateFactions + isPredatoryFaction), balance/utility.ts (W.robGain/robRisk/robRel + ROB_LOOT_*/ROB_STRENGTH_*/
+MERCHANT_WORK_TASK), systems/task-selection.ts (ROB-оценка/цель/гейт + docblock), systems/task-selection.test.ts
+(+10 ROB-тестов), docs/diagrams/task-selection-rob-2.12.md. ХВОСТ 2.16: хищные фракции в worldgen/спавне (тогда
+ROB оживёт и голдены сдвинутся ОЖИДАЕМО), MemoryDecay/2.13 (память ограбления + обход маршрута жертвы).

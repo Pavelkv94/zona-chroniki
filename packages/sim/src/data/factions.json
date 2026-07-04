@@ -3,7 +3,7 @@
     { "id": "loners", "name": "Одиночки" },
     { "id": "military", "name": "Военные" },
     { "id": "duty", "name": "Долг" },
-    { "id": "bandits", "name": "Бандиты" }
+    { "id": "bandits", "name": "Бандиты", "predatory": true }
   ],
   "relations": [
     { "a": "loners", "b": "military", "value": -10 },

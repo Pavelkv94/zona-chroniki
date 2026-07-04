@@ -252,6 +252,25 @@ function validateProfessions(data: unknown): readonly ProfessionData[] {
   return base as readonly ProfessionData[];
 }
 
+/**
+ * Валидирует `factions.json.factions` (Фаза 2, задача 2.12/D-062). Поверх общей
+ * проверки `{id, name}` (validateIdNameList) требует, чтобы опциональное поле
+ * `predatory` — ДИСПОЗИЦИЯ грабежа (члены хищной фракции выбирают ROB) — было boolean,
+ * если присутствует. Опущено ⇒ фракция не-хищная (ROB её NPC не выбирают). Код
+ * поведения читает эту диспозицию из данных (isPredatoryFaction), а НЕ хардкодит id.
+ */
+function validateFactions(data: unknown): readonly FactionData[] {
+  const base = validateIdNameList(data, 'factions', 'factions');
+  base.forEach((r) => {
+    const p = (r as unknown as { predatory?: unknown }).predatory;
+    assert(
+      p === undefined || typeof p === 'boolean',
+      `фракция "${r.id}": predatory должен быть boolean (или опущен)`,
+    );
+  });
+  return base;
+}
+
 // ── Валидация матрицы отношений фракций (закон №10) ──────────────────────────
 
 /** Границы шкалы отношений (D-046 контекст: −100 враг … +100 союзник). */
@@ -395,9 +414,14 @@ export const SPECIES: readonly SpeciesData[] = deepFreeze(validateSpecies(specie
 /** Валидированный и замороженный пул имён. */
 export const NAMES: NamesData = deepFreeze(validateNames(namesRaw));
 
-/** Валидированный и замороженный список фракций (контент, закон №10). */
+/**
+ * Валидированный и замороженный список фракций (контент, закон №10). Поверх общей
+ * проверки `{id,name}` требует, чтобы опциональное поле `predatory` (диспозиция
+ * грабежа, D-062) было boolean, если задано (иначе fail-fast, как прочая валидация
+ * контента). Опущено ⇒ фракция не-хищная.
+ */
 export const FACTIONS: readonly FactionData[] = deepFreeze(
-  validateIdNameList(factionsRaw, 'factions', 'factions'),
+  validateFactions(factionsRaw),
 );
 
 /** Валидированный и замороженный список профессий (контент, закон №10). */
@@ -560,6 +584,17 @@ export function getFaction(id: string): FactionData {
   const f = FACTION_BY_ID.get(id);
   assert(f !== undefined, `getFaction: неизвестная фракция "${id}"`);
   return f;
+}
+
+/**
+ * ХИЩНА ли фракция `id` — читает ДИСПОЗИЦИЮ `predatory` из контента (factions.json,
+ * D-062, закон №10: НЕ хардкод id 'bandits' в коде поведения). `true` ⇒ её NPC
+ * по природе грабят (утилити-AI выбирает ROB). Неизвестный id ⇒ `false` (не бросаем:
+ * потребитель — гейт выбора задачи, для него неизвестная/отсутствующая фракция просто
+ * «не хищник», а не фатальная ошибка контента).
+ */
+export function isPredatoryFaction(id: string): boolean {
+  return FACTION_BY_ID.get(id)?.predatory === true;
 }
 
 /** Профессия по строковому id. Бросает при неизвестном id (закон №10). */

@@ -17,9 +17,25 @@
  * на наземном луте ('inventory' поля, D-046) — как цели SEARCH (задача 2.10).
  * TaskSelection НЕ читает глобальное состояние мира в обход восприятия и НЕ
  * зовёт другие системы напрямую: общение — через компоненты и шину (закон №6).
- * Угроза влияет на выбор ЧЕРЕЗ `Needs.fear` (его поднимает Perception 1.7 от
- * co-located угрозы) — поэтому отдельного чтения `contacts` здесь нет: страх уже
- * инкапсулирует «рядом зверь», а формулы оценок опираются на него (см. FLEE).
+ * Угроза-ЗВЕРЬ влияет на выбор ЧЕРЕЗ `Needs.fear` (его поднимает Perception 1.7 от
+ * co-located угрозы), поэтому для FLEE отдельного чтения `contacts` не нужно. Для
+ * ГРАБЕЖА (ROB, задача 2.12) жертва берётся ИМЕННО из `contacts` наблюдателя (закон
+ * №1 — бандит видит только воспринятое, не читает весь мир): её наблюдаемая роль
+ * (`'faction'`/`'profession'` в ResourceStore) и видимое снаряжение задают оценку, а
+ * ЦЕННОСТЬ её инвентаря бандиту НЕ видна (анти-чит, D-049 — см. ROB ниже).
+ *
+ * ── ГРАБЁЖ (ROB, задача 2.12, D-049/D-062, закон №2 — детерминированно, НЕ «X% шанс») ─
+ * ROB выбирают ТОЛЬКО акторы ХИЩНОЙ фракции (диспозиция `predatory` из factions.json,
+ * data-driven, закон №10 — НЕ хардкод id 'bandits'). Оценка ЛУЧШЕЙ видимой жертвы:
+ *   sRob = W.robGain·lootProxy − W.robRisk·targetStrength − W.robRel·relationPenalty
+ * где lootProxy — оценка добычи по РОЛИ цели (профессия/фракция, БЕЗ чтения её
+ * инвентаря — анти-чит); targetStrength — наблюдаемая сила (боевой навык × видимое
+ * оружие + hp + со-локейт СОЮЗНИКИ той же фракции: группа → сила ↑ → sRob ↓ ⇒ бандит
+ * ИЗБЕГАЕТ групп, грабит одиночек, эмерджентно); relationPenalty — max(личное
+ * отношение, репутация фракции цели) из субстрата 2.15 (не грабить союзника/своего).
+ * Жертва — co-located СТОЯЩИЙ живой человек НЕ-хищной фракции (согласовано с гейтом боя
+ * Encounters 2.11). Не хищник / нет жертвы ⇒ sRob=−∞ (ROB вне argmax). Стартовая
+ * когорта worldgen — 'loners' (не хищники) ⇒ ROB дремлет, голдены Фазы 1 не сдвигаются.
  *
  * ── Оценки (веса ТОЛЬКО из balance/utility.ts, закон №7) ─────────────────────
  * Нужды нормируются делением на NEED_MAX ∈ [0..1]; safety(loc)=1-danger. Формулы:
@@ -57,8 +73,8 @@
  *
  * ── Детерминированный argmax (закон №8, D-020) ───────────────────────────────
  * Выбор — задача с наибольшей оценкой. При РАВЕНСТВЕ — МЕНЬШИЙ код TaskKind
- * (порядок enum: SLEEP<EAT<DRINK<FORAGE<HUNT<REST<FLEE<WORK<TRADE<SEARCH; SEARCH=10 —
- * ПОСЛЕДНИЙ код, на точном равенстве уступает любой задаче 0..8), а НЕ rng-tie-break:
+ * (порядок enum: SLEEP<EAT<DRINK<FORAGE<HUNT<REST<FLEE<WORK<TRADE<ROB<SEARCH; SEARCH=10 —
+ * ПОСЛЕДНИЙ код, ROB=9 перед ним; на точном равенстве уступают меньшему коду), а НЕ rng-tie-break:
  * кандидаты обходятся в порядке возрастания кода со строгим `>`, поэтому первый
  * достигший максимума (меньший код) удерживает выбор. rng в решении НЕ участвует
  * (закон №2: случайность — только физиология, здесь её нет).
@@ -73,6 +89,8 @@
  *   FLEE           → соседняя loc с наименьшим danger (tie — min id);
  *   WORK           → Job.workplace (рабочее место; если уже там — на месте);
  *   TRADE          → ближайшее поселение (Settlement+Position; если уже там — на месте);
+ *   ROB            → target = жертва (targetEid), targetLoc = её loc (== loc грабителя,
+ *                    жертва co-located ⇒ Movement no-op, бой завяжет Encounters 2.11);
  *   SEARCH         → ближайшее аномальное поле с артефактом на луте (если уже там — на месте).
  * Ближайшая loc считается детерминированным Дейкстрой (pathfinding), tie по
  * стоимости — меньший id локации.
@@ -90,14 +108,24 @@
  * потребителя), иначе Movement прочёл бы старую причину.
  */
 
-import type { EntityId, LocationId } from '@zona/shared';
+import type { Contact, EntityId, FactionId, LocationId } from '@zona/shared';
 import type { System, SystemCtx } from '../core/system';
-import { queryEntities, hasComponent, addComponent, stampCause } from '../core/ecs';
-import { Position, Needs, Task, Skills, Home, Animal, Human, Alive, Job, Settlement, AnomalyField, TaskKind } from '../core/components';
-import { MAP, getLocation, getItem, neighbors } from '../data/index';
+import { queryEntities, hasComponent, existsEntity, addComponent, stampCause } from '../core/ecs';
+import { Position, Needs, Task, Skills, Health, Home, Animal, Human, Alive, Job, Settlement, AnomalyField, TaskKind } from '../core/components';
+import { MAP, getLocation, getItem, getProfession, neighbors, isPredatoryFaction } from '../data/index';
 import { MAP_GRAPH, shortestPath } from './pathfinding';
-import { NEED_MAX } from '../balance/needs';
-import { W, FALLBACK_SCORE_FLOOR, REST_FATIGUE_FACTOR } from '../balance/utility';
+import { NEED_MAX, HEALTH_MAX } from '../balance/needs';
+import {
+  W,
+  FALLBACK_SCORE_FLOOR,
+  REST_FATIGUE_FACTOR,
+  ROB_LOOT_BASE,
+  ROB_LOOT_MERCHANT_BONUS,
+  ROB_STRENGTH_WEAPON,
+  ROB_STRENGTH_HP,
+  ROB_STRENGTH_ALLY,
+  MERCHANT_WORK_TASK,
+} from '../balance/utility';
 import {
   ESSENTIAL_FOOD_MIN,
   ESSENTIAL_AMMO_MIN,
@@ -107,7 +135,17 @@ import {
   TRADE_KEEP_DRINK,
   TRADE_KEEP_MEDICAL,
 } from '../balance/economy';
+import { getRelation as getMemoryRelation, factionReputation, entitySubject } from './memory';
 import { isNight } from './daynight';
+
+/** Ключ ResourceStore со списком видимых контактов наблюдателя (Perception 1.7, D-023). */
+const CONTACTS_KEY = 'contacts';
+
+/** Ключ ResourceStore с фракцией NPC (D-007; наблюдаемая роль/принадлежность). */
+const FACTION_KEY = 'faction';
+
+/** Ключ ResourceStore с профессией NPC (D-007; наблюдаемая роль). */
+const PROFESSION_KEY = 'profession';
 
 /** Ключ ResourceStore со списком инвентаря (D-007); форма — см. worldgen. */
 const INVENTORY_KEY = 'inventory';
@@ -119,14 +157,15 @@ interface InventoryEntry {
 }
 
 // ── Типизированные SoA-колонки ───────────────────────────────────────────────
-const POS = Position as unknown as { readonly loc: Uint32Array };
+const POS = Position as unknown as { readonly loc: Uint32Array; readonly dest: Uint32Array };
 const NEED = Needs as unknown as {
   readonly hunger: Float32Array;
   readonly thirst: Float32Array;
   readonly fatigue: Float32Array;
   readonly fear: Float32Array;
 };
-const SKILL = Skills as unknown as { readonly survival: Float32Array };
+const SKILL = Skills as unknown as { readonly survival: Float32Array; readonly shooting: Float32Array };
+const HP = Health as unknown as { readonly hp: Float32Array };
 const HOME = Home as unknown as { readonly loc: Uint32Array };
 const JOB = Job as unknown as { readonly workplace: Uint32Array };
 const TSK = Task as unknown as {
@@ -291,6 +330,133 @@ function safestNeighbor(loc: number): LocationId {
   return best;
 }
 
+/** Выбранная жертва грабежа: конкретная цель и её (= грабителя) локация. */
+interface RobTarget {
+  readonly eid: EntityId;
+  readonly loc: LocationId;
+  readonly score: number;
+}
+
+/**
+ * true, если в инвентаре ВИДНО оружие (kind `weapon`, qty>0) — та же логика первого
+ * оружия, что в encounter-резолвере. Это ВИДИМОЕ снаряжение цели (оружие на виду,
+ * законная наблюдаемость, закон №1/D-049) для оценки её СИЛЫ — НЕ оценка ценности
+ * добычи (её грабитель не видит; см. `lootProxyOf`, анти-чит).
+ */
+function hasVisibleWeapon(inv: readonly InventoryEntry[] | undefined): boolean {
+  if (inv === undefined) return false;
+  for (const e of inv) {
+    if (e.qty > 0 && getItem(e.item).kind === 'weapon') return true;
+  }
+  return false;
+}
+
+/**
+ * НАБЛЮДАЕМАЯ оценка добычи цели `target` (lootProxy, D-049) — по её РОЛИ, БЕЗ чтения
+ * инвентаря жертвы (АНТИ-ЧИТ: бандит не видит чужой карман). База + надбавка за
+ * торговую профессию (торговец видимо тащит товар; торговость — data-driven по
+ * professions.json, закон №10). НАМЕРЕННО не принимает инвентарь параметром — доступа
+ * к чужому 'inventory' здесь нет.
+ */
+function lootProxyOf(resources: SystemCtx['world']['resources'], target: EntityId): number {
+  let proxy = ROB_LOOT_BASE;
+  const prof = resources.get<string>(PROFESSION_KEY, target);
+  if (prof !== undefined && getProfession(prof).workTasks.includes(MERCHANT_WORK_TASK)) {
+    proxy += ROB_LOOT_MERCHANT_BONUS;
+  }
+  return proxy;
+}
+
+/**
+ * НАБЛЮДАЕМАЯ сила цели `target` (targetStrength, D-049): боевой навык × ВИДИМОЕ оружие
+ * + здоровье + со-локейт союзники (`allies` — предпосчитано вызывающим). Группа союзников
+ * → высокая сила → sRob вниз ⇒ бандит избегает групп, грабит одиночек (эмерджентно).
+ */
+function targetStrengthOf(
+  ecs: SystemCtx['world']['ecs'],
+  resources: SystemCtx['world']['resources'],
+  target: EntityId,
+  allies: number,
+): number {
+  const inv = resources.get<InventoryEntry[]>(INVENTORY_KEY, target);
+  const armed = hasVisibleWeapon(inv);
+  const shooting = hasComponent(ecs, Skills, target) ? (SKILL.shooting[target] as number) : 0;
+  const hpNorm = hasComponent(ecs, Health, target) ? (HP.hp[target] as number) / HEALTH_MAX : 0;
+  return (armed ? shooting * ROB_STRENGTH_WEAPON : 0) + hpNorm * ROB_STRENGTH_HP + allies * ROB_STRENGTH_ALLY;
+}
+
+/**
+ * relationPenalty (D-049) грабителя `robber` к цели `target` из СУБСТРАТА 2.15
+ * (memory.ts): max(личное отношение к сущности, репутация её фракции). Положительное
+ * (союзник/друг) → большой штраф (не грабить своих); отрицательное (враг) → штраф < 0
+ * (охотнее грабить врага). Нейтрал (нет записей) → 0.
+ */
+function robRelationPenalty(
+  resources: SystemCtx['world']['resources'],
+  robber: EntityId,
+  target: EntityId,
+  targetFaction: FactionId | undefined,
+): number {
+  const personal = getMemoryRelation(resources, robber, entitySubject(target));
+  const facRep = targetFaction !== undefined ? factionReputation(resources, robber, targetFaction) : 0;
+  return Math.max(personal, facRep);
+}
+
+/**
+ * Лучшая (max sRob) жертва грабежа для ХИЩНОГО `robber` из его ВИДИМЫХ контактов
+ * (Perception, закон №1 — не читаем весь мир). Кандидат — co-located СТОЯЩИЙ живой
+ * человек НЕ-хищной фракции (согласовано с гейтом цели Encounters 2.11, D-060: тот же
+ * бой требует co-located+стоящих). Обход контактов по возрастанию target (сорт.) +
+ * строгое `>` ⇒ tie → меньший eid (закон №8). `null`, если валидной жертвы нет ⇒ sRob=−∞.
+ */
+function bestRobTarget(
+  ctx: SystemCtx,
+  robber: EntityId,
+  loc: number,
+  humansByLoc: ReadonlyMap<number, readonly EntityId[]>,
+): RobTarget | null {
+  const { world } = ctx;
+  const ecs = world.ecs;
+  const contacts = world.resources.get<readonly Contact[]>(CONTACTS_KEY, robber);
+  if (contacts === undefined || contacts.length === 0) return null;
+
+  let best: RobTarget | null = null;
+  for (const c of contacts) {
+    const t = c.target;
+    // Валидная достижимая жертва: живой человек, co-located и СТОЯЩИЙ (гейт боя 2.11).
+    if (t === robber) continue;
+    if (!existsEntity(ecs, t)) continue;
+    if (!hasComponent(ecs, Human, t) || !hasComponent(ecs, Alive, t)) continue;
+    if ((POS.loc[t] as number) !== loc) continue; // только co-located (не «на подходе»)
+    if ((POS.dest[t] as number) !== loc) continue; // цель стоит (иначе бой не завяжется)
+
+    const tFaction = world.resources.get<FactionId>(FACTION_KEY, t);
+    if (tFaction !== undefined && isPredatoryFaction(tFaction)) continue; // не грабим своих-хищников
+
+    // Союзники цели: co-located живые люди ТОЙ ЖЕ фракции (кроме самой цели).
+    let allies = 0;
+    if (tFaction !== undefined) {
+      const roster = humansByLoc.get(loc);
+      if (roster !== undefined) {
+        for (const other of roster) {
+          if (other === t) continue;
+          if (world.resources.get<FactionId>(FACTION_KEY, other) === tFaction) allies++;
+        }
+      }
+    }
+
+    const loot = lootProxyOf(world.resources, t);
+    const strength = targetStrengthOf(ecs, world.resources, t, allies);
+    const penalty = robRelationPenalty(world.resources, robber, t, tFaction);
+    const score = W.robGain * loot - W.robRisk * strength - W.robRel * penalty;
+
+    if (best === null || score > best.score) {
+      best = { eid: t, loc: loc as LocationId, score };
+    }
+  }
+  return best;
+}
+
 /**
  * Система TaskSelection (`every: 1`). Для каждого живого человека считает оценки
  * задач из состояния, берёт детерминированный argmax, вычисляет валидную цель и —
@@ -341,6 +507,20 @@ export const TaskSelection: System = {
     }
     const artifactFieldLocs = Array.from(artifactFieldLocSet).sort((a, b) => a - b) as LocationId[];
 
+    // ── Живые люди по локациям (для подсчёта СОЮЗНИКОВ цели грабежа, задача 2.12).
+    // Только читается хищными акторами при оценке ROB; queryEntities сорт. по eid ⇒
+    // бакеты детерминированы (закон №8). Пусто/не хищник ⇒ ветка ROB не трогает это.
+    const humansByLoc = new Map<number, EntityId[]>();
+    for (const h of queryEntities(ecs, [Human, Alive, Position])) {
+      const l = POS.loc[h] as number;
+      let bucket = humansByLoc.get(l);
+      if (bucket === undefined) {
+        bucket = [];
+        humansByLoc.set(l, bucket);
+      }
+      bucket.push(h);
+    }
+
     for (const eid of queryEntities(ecs, [Human, Alive, Needs])) {
       const loc = POS.loc[eid] as number;
       const locData = getLocation(loc as LocationId);
@@ -379,6 +559,14 @@ export const TaskSelection: System = {
       const nearestArtifactField =
         artifactFieldLocs.length > 0 ? nearestLoc(loc, artifactFieldLocs) : undefined;
       const canSearch = nearestArtifactField !== undefined && !night;
+      // Грабёж (задача 2.12, D-049/D-062): ROB доступен ТОЛЬКО членам ХИЩНОЙ фракции
+      // (диспозиция `predatory` из factions.json — data-driven, закон №10; worldgen
+      // спавнит всех как 'loners' ⇒ не хищники ⇒ ROB дремлет, голдены Фазы 1 стабильны).
+      // Жертва — ВИДИМАЯ достижимая (bestRobTarget по contacts, закон №1). Нет хищной
+      // диспозиции или нет валидной жертвы ⇒ robTarget=null ⇒ sRob=−∞.
+      const myFaction = world.resources.get<FactionId>(FACTION_KEY, eid);
+      const isPredator = myFaction !== undefined && isPredatoryFaction(myFaction);
+      const robTarget = isPredator ? bestRobTarget(ctx, eid, loc, humansByLoc) : null;
 
       // ── Оценки (веса из balance/utility, закон №7) ─────────────────────────
       const sSleep = W.fatigue * fatigue + (night ? W.night : 0) + safety * W.safe;
@@ -417,6 +605,12 @@ export const TaskSelection: System = {
       // перебивает рутинную торговлю у спокойного NPC), но needCalm держит его ниже
       // выживания. Нет поля/ночь ⇒ −∞ (исключён из argmax, как EAT без еды).
       const sSearch = canSearch ? W.search * safety * needCalm : -Infinity;
+      // ROB (задача 2.12, D-049): sRob = W.robGain·lootProxy − W.robRisk·targetStrength
+      // − W.robRel·relationPenalty, посчитан на ЛУЧШЕЙ видимой жертве (bestRobTarget).
+      // В ОТЛИЧИЕ от WORK/TRADE/SEARCH — БЕЗ гейта needCalm/safety: грабёж — стратегия
+      // выживания хищника; конкуренцию с голодом/страхом ведут EAT/FLEE своими оценками
+      // (испуганный бандит выберет FLEE=1.5·fear над ROB). Нет жертвы/не хищник ⇒ −∞.
+      const sRob = robTarget !== null ? robTarget.score : -Infinity;
 
       // ── argmax по возрастанию кода TaskKind + строгое `>` ⇒ tie → меньший код
       // (D-020, НЕ rng). Порядок массива ОБЯЗАН быть по возрастанию кода.
@@ -430,6 +624,7 @@ export const TaskSelection: System = {
         [TaskKind.FLEE, sFlee],
         [TaskKind.WORK, sWork],
         [TaskKind.TRADE, sTrade],
+        [TaskKind.ROB, sRob],
         [TaskKind.SEARCH, sSearch],
       ];
       let kind: TaskKind = TaskKind.FORAGE;
@@ -470,6 +665,14 @@ export const TaskSelection: System = {
           // (Movement no-op, Trade сработает у стоящего NPC). targetEid не нужен —
           // Trade находит поселение по loc сам (systems/trade.ts).
           targetLoc = nearestSettlement as LocationId;
+          break;
+        case TaskKind.ROB:
+          // robTarget!==null гарантировано: иначе sRob=−∞ и ROB не выбран. Цель — жертва
+          // (targetEid) в её локации (== loc грабителя, т.к. кандидат co-located).
+          // Encounters (2.11, D-060) находит бой по (loc,targetEid) у стоящего грабителя
+          // и стоящей co-located жертвы — согласовано с гейтом цели bestRobTarget.
+          targetLoc = (robTarget as RobTarget).loc;
+          targetEid = (robTarget as RobTarget).eid;
           break;
         case TaskKind.SEARCH:
           // canSearch гарантирует nearestArtifactField!==undefined (иначе sSearch=−∞ и
