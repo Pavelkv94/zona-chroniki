@@ -217,3 +217,14 @@ export { Chronicle, chronicle, unrollCauses } from './systems/chronicle';
 export type { ChronicleEntry } from './systems/chronicle';
 export { CHRONICLE_THRESHOLD, FAME_PER_CHRONICLE } from './balance/narrative';
 export { participantsOf } from './narrative/significance';
+
+// Система Radio (3.5, D-070): РАДИО-ЭФИР — озвучка значимых событий их НАБЛЮДАТЕЛЯМИ.
+// РЕАКТИВНО (bus.at(tick−1), закон №6) на каждое событие прошлого тика с significance >=
+// RADIO_THRESHOLD выбирает живого Human-наблюдателя в локации события (min-eid, не жертва),
+// выбирает шаблон seeded-fnv(eventId, speaker) в тоне говорящего (temperamentCode, D-071) и
+// эмитит `radio/message { speakerEid, subjects, loc, templateId, params, isFirsthand:true }`
+// с causedBy = id события. Строку НЕ хранит (закон №5) — read-time собирает renderMessage (3.4).
+// Гроза (RADIO_JAMMING_WEATHER) глушит эфир (потеря сообщений). НЕ в конвейере до 3.7 (батч
+// сдвига голденов) ⇒ голдены Фазы 3 не двигаются; EconomyInvariant не затронут (не масса).
+export { Radio } from './systems/radio';
+export { RADIO_THRESHOLD, RADIO_JAMMING_WEATHER } from './balance/narrative';

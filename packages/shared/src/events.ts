@@ -94,6 +94,32 @@ export type ItemHarvestSource = 'carcass' | 'anomaly';
  */
 export type NeedLevel = 'critical';
 
+/**
+ * Параметры подстановки радио-сообщения (задача 3.5, система Radio, D-070). Это
+ * ФОРМА `params`, которую несёт событие `radio/message` и которую позже читает
+ * ЧИСТЫЙ форматтер `renderMessage` (@zona/sim/narrative/render, 3.4/D-069), собирая
+ * из `templateId + params` готовую plain-строку эфира. Держим форму в `@zona/shared`
+ * (а не тянем `MessageParams` из `@zona/sim`), т.к. событие — контракт всех пакетов
+ * монорепо (ui/headless читают лог). Значения СЫРЫЕ: имена как `EntityId`(number)
+ * либо строка, `loc` как `LocationId`(number), `count`/`item` — число/строковый id;
+ * резолв id→имя/название делает `RenderContext` на чтении, НЕ здесь (закон №5/№6:
+ * событие не хранит готовый текст и не тянет ECS). Все поля опциональны — шаблон
+ * подставит нейтральный дефолт отсутствующему плейсхолдеру. Структурно совместима с
+ * `MessageParams` рендера (3.4): Radio строит `MessageParams` и кладёт его сюда.
+ */
+export interface RadioMessageParams {
+  /** Говорящий (наблюдатель, озвучивший событие) — `EntityId` или готовая строка. */
+  readonly speaker?: string | number;
+  /** Второе действующее лицо (покойник/жертва/новичок) — `EntityId` или строка. */
+  readonly subject?: string | number;
+  /** Локация события (`LocationId`) — резолвится `ctx.locOf` на чтении. */
+  readonly loc?: number;
+  /** Число (враги/потери/штуки) — например размер вражеской стороны в бою. */
+  readonly count?: number;
+  /** Строковый id предмета/артефакта — резолвится `ctx.itemOf` на чтении. */
+  readonly item?: string;
+}
+
 /** Общая «шапка» любого события шины. */
 export interface SimEventBase {
   /** Монотонный id, присваивается шиной при публикации (C-4). */
@@ -556,5 +582,40 @@ export type SimEvent =
         readonly subjects: readonly Subject[];
         readonly loc?: LocationId;
         readonly templateId?: string;
+      };
+    })
+  | (SimEventBase & {
+      type: 'radio/message';
+      /**
+       * РАДИО-СООБЩЕНИЕ в эфир — озвучка значимого события мира НАБЛЮДАТЕЛЕМ (задача 3.5,
+       * система Radio, D-070). Публикуется РЕАКТИВНО на закоммиченный прошлый тик: Radio
+       * читает `bus.at(tick−1)`, для КАЖДОГО события с `significance(ev,world) >=
+       * RADIO_THRESHOLD` (balance/narrative, закон №7) выбирает ЖИВОГО Human-наблюдателя в
+       * локации события и эмитит ЭТО событие от его имени. Сообщение = событие + наблюдатель +
+       * окраска характером (GDD §8.1): текст НЕ хранится (закон №5) — несём `templateId +
+       * params`, plain-строку соберёт `renderMessage` (3.4/D-069) на чтении лога/UI.
+       *  - `speakerEid` — НАБЛЮДАТЕЛЬ, озвучивший событие (живой Human в loc, дедуп = min-eid,
+       *    НЕ жертва). Нет наблюдателя (событие в пустой loc) ⇒ события нет (закон №1: некому
+       *    в эфир — тишина тоже сообщение).
+       *  - `subjects` — участники наблюдаемого события (`participantsOf`), закодированы `Subject`
+       *    (memory.ts 2.15: `"e:<eid>"`), сорт.+уникальны (детерминизм, закон №8) — для летописи/UI.
+       *  - `loc` — локация наблюдаемого события (если определима), иначе опущена.
+       *  - `templateId` = `"<eventType>|<temperament>|<index>"` (D-069). `temperament` — тон
+       *    ГОВОРЯЩЕГО (`temperamentCode(speaker)`, D-071); `index = fnv(eventId, speakerEid) mod
+       *    poolSize` — ЧИСТАЯ функция стабильных id (НЕ rng-поток, D-070): resume-safe и
+       *    порядко-независима.
+       *  - `params` — сырые значения подстановки (`RadioMessageParams`).
+       *  - `isFirsthand` — ЛИЧНО ли воспринято. Radio ставит `true` (наблюдатель видел сам);
+       *    сид для Rumors 3.6, где ретрансляция услышанного даст `false` (искажение слуха).
+       * `causedBy = id наблюдаемого события` (событие → его озвучка, закон №6/D-030). Сообщение
+       * НЕ творит массу/деньги (закон №3) — нарративное событие, EconomyInvariant его не видит.
+       */
+      payload: {
+        readonly speakerEid: EntityId;
+        readonly subjects: readonly Subject[];
+        readonly loc?: LocationId;
+        readonly templateId: string;
+        readonly params: RadioMessageParams;
+        readonly isFirsthand: boolean;
       };
     });

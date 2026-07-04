@@ -26,6 +26,7 @@ export type {
   NeedLevel,
   ItemConsumeReason,
   ItemHarvestSource,
+  RadioMessageParams,
 } from './events';
 
 export type { Contact } from './contacts';
