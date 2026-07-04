@@ -10,8 +10,10 @@
  * ── Что читает (только воспринятое/своё, закон №6) ───────────────────────────
  * Position.loc, Needs (hunger/thirst/fatigue/fear), Home.loc, Skills.survival,
  * Job.workplace (носитель Job — трудоустроен, задача 2.4), инвентарь (ResourceStore
- * 'inventory') и СТАТИЧЕСКИЕ свойства локаций из data (water/game/forage/danger).
- * Живые животные (носители Animal+Alive) — как цели охоты. TaskSelection НЕ читает глобальное состояние мира в обход восприятия и НЕ
+ * 'inventory'; из него выводится ПОВОД торговать — нехватка эссеншелов/избыток на
+ * сбыт, задача 2.6) и СТАТИЧЕСКИЕ свойства локаций из data (water/game/forage/danger).
+ * Живые животные (носители Animal+Alive) — как цели охоты; поселения (Settlement+
+ * Position) — как цели торговли. TaskSelection НЕ читает глобальное состояние мира в обход восприятия и НЕ
  * зовёт другие системы напрямую: общение — через компоненты и шину (закон №6).
  * Угроза влияет на выбор ЧЕРЕЗ `Needs.fear` (его поднимает Perception 1.7 от
  * co-located угрозы) — поэтому отдельного чтения `contacts` здесь нет: страх уже
@@ -28,13 +30,18 @@
  *   FORAGE = FALLBACK_SCORE_FLOOR + W.forageBase·forageAbund   (fallback, всегда >0)
  *   REST   = W.restBase + W.fatigue·fatigue·REST_FATIGUE_FACTOR (fallback, всегда >0)
  *   WORK   = W.work·safety·max(0, 1−maxNeed)   (ТОЛЬКО носитель Job И день, задача 2.4)
+ *   TRADE  = W.trade·safety·max(0, 1−maxNeed)  (ТОЛЬКО повод в инвентаре И день, задача 2.6)
  * EAT без еды и HUNT без достижимой дичи ИСКЛЮЧАЮТСЯ из argmax (−∞): нельзя есть
  * то, чего нет (закон №3), и нельзя охотиться там, где дичи нет. WORK ИСКЛЮЧЁН (−∞)
  * у безработных (нет Job) и ночью (работник спит, а не выходит на смену) — поведение
- * не-Job NPC не меняется. `maxNeed` = самая высокая нужда: любая критическая нужда/
- * страх гасит WORK к нулю и пропускает вперёд EAT/DRINK/SLEEP/HUNT/FLEE (сначала
- * выжить, потом смена); спокойный сытый работник днём выбирает WORK НАД fallback'ами
- * (эмерджентный «рабочий день» БЕЗ явного расписания — закон №1/№2). Два fallback'а
+ * не-Job NPC не меняется. TRADE ИСКЛЮЧЁН (−∞) без ПОВОДА в инвентаре (нет нехватки
+ * эссеншелов и нет избытка на сбыт), при пустом множестве достижимых поселений (D-026)
+ * и ночью (рынок закрыт) — иначе NPC пошёл бы к поселению «в пустоту». `maxNeed` =
+ * самая высокая нужда: любая критическая нужда/страх гасит WORK и TRADE к нулю и
+ * пропускает вперёд EAT/DRINK/SLEEP/HUNT/FLEE (сначала выжить, потом смена/торговля);
+ * спокойный сытый работник днём выбирает WORK НАД fallback'ами, а спокойный NPC с
+ * поводом — TRADE (эмерджентный «рабочий день»/«торговый выход» БЕЗ явного расписания —
+ * закон №1/№2). Два fallback'а
  * (FORAGE/REST) СТРОГО положительны, поэтому argmax НИКОГДА не пуст — idle
  * невозможен (закон №4, D-020).
  *
@@ -47,7 +54,7 @@
  *
  * ── Детерминированный argmax (закон №8, D-020) ───────────────────────────────
  * Выбор — задача с наибольшей оценкой. При РАВЕНСТВЕ — МЕНЬШИЙ код TaskKind
- * (порядок enum: SLEEP<EAT<DRINK<FORAGE<HUNT<REST<FLEE<WORK), а НЕ rng-tie-break:
+ * (порядок enum: SLEEP<EAT<DRINK<FORAGE<HUNT<REST<FLEE<WORK<TRADE), а НЕ rng-tie-break:
  * кандидаты обходятся в порядке возрастания кода со строгим `>`, поэтому первый
  * достигший максимума (меньший код) удерживает выбор. rng в решении НЕ участвует
  * (закон №2: случайность — только физиология, здесь её нет).
@@ -60,7 +67,8 @@
  *   DRINK          → ближайшая loc с водой по edgeLen (текущая, если с водой);
  *   HUNT           → ближайшая loc с живой дичью; targetEid = min-eid особь в ней;
  *   FLEE           → соседняя loc с наименьшим danger (tie — min id);
- *   WORK           → Job.workplace (рабочее место; если уже там — на месте).
+ *   WORK           → Job.workplace (рабочее место; если уже там — на месте);
+ *   TRADE          → ближайшее поселение (Settlement+Position; если уже там — на месте).
  * Ближайшая loc считается детерминированным Дейкстрой (pathfinding), tie по
  * стоимости — меньший id локации.
  *
@@ -80,11 +88,20 @@
 import type { EntityId, LocationId } from '@zona/shared';
 import type { System, SystemCtx } from '../core/system';
 import { queryEntities, hasComponent, addComponent, stampCause } from '../core/ecs';
-import { Position, Needs, Task, Skills, Home, Animal, Human, Alive, Job, TaskKind } from '../core/components';
+import { Position, Needs, Task, Skills, Home, Animal, Human, Alive, Job, Settlement, TaskKind } from '../core/components';
 import { MAP, getLocation, getItem, neighbors } from '../data/index';
 import { MAP_GRAPH, shortestPath } from './pathfinding';
 import { NEED_MAX } from '../balance/needs';
 import { W, FALLBACK_SCORE_FLOOR, REST_FATIGUE_FACTOR } from '../balance/utility';
+import {
+  ESSENTIAL_FOOD_MIN,
+  ESSENTIAL_AMMO_MIN,
+  TRADE_KEEP_FOOD,
+  TRADE_KEEP_AMMO,
+  TRADE_KEEP_WEAPON,
+  TRADE_KEEP_DRINK,
+  TRADE_KEEP_MEDICAL,
+} from '../balance/economy';
 import { isNight } from './daynight';
 
 /** Ключ ResourceStore со списком инвентаря (D-007); форма — см. worldgen. */
@@ -168,6 +185,59 @@ function hasFood(inv: readonly InventoryEntry[] | undefined): boolean {
 }
 
 /**
+ * Резерв «на руках» по виду при ПРОДАЖЕ: столько единиц NPC оставляет себе, всё
+ * сверх — избыток на сбыт. Совпадает с политикой исполнения Trade (systems/trade.ts,
+ * задача 2.5), чтобы НАМЕРЕНИЕ торговать (2.6) не расходилось с реальной сделкой:
+ * оценивать TRADE как «есть что продать» надо по тем же порогам, по которым Trade
+ * действительно сбудет излишек. Виды без записи (резерв 0) считаются полностью
+ * избыточными.
+ */
+function reserveForKind(kind: string): number {
+  switch (kind) {
+    case 'weapon':
+      return TRADE_KEEP_WEAPON;
+    case 'food':
+      return TRADE_KEEP_FOOD;
+    case 'drink':
+      return TRADE_KEEP_DRINK;
+    case 'ammo':
+      return TRADE_KEEP_AMMO;
+    case 'medical':
+      return TRADE_KEEP_MEDICAL;
+    default:
+      return 0;
+  }
+}
+
+/**
+ * ПРИЧИННЫЙ повод торговать (закон №2, НЕ «X% шанс») — выводится ДЕТЕРМИНИРОВАННО из
+ * состояния инвентаря NPC, теми же порогами, которыми Trade (2.5) исполнит сделку:
+ *   • НЕХВАТКА эссеншелов — food-единиц < ESSENTIAL_FOOD_MIN ИЛИ ammo < ESSENTIAL_AMMO_MIN
+ *     (NPC пойдёт ДОКУПИТЬ провизию/патроны у поселения);
+ *   • ИЗБЫТОК на сбыт — любой предмет с qty сверх резерва по виду (reserveForKind)
+ *     (NPC пойдёт СБЫТЬ лишнее поселению).
+ * Нет ни того, ни другого ⇒ повода нет (torговля не нужна) — тогда sTrade = −∞ (как
+ * EAT без еды: не выбираем задачу «в пустоту», D-034/закон №3). Обход массива инвентаря
+ * (стабильный порядок worldgen/Trade — сорт. по itemId) детерминирован; результат не
+ * зависит от порядка (сумма ассоциативна, «любой избыток» — дизъюнкция), закон №8.
+ * `undefined`-инвентарь (нет складской записи) → повода нет (не гоним в пустой поход).
+ */
+function hasTradeReason(inv: readonly InventoryEntry[] | undefined): boolean {
+  if (inv === undefined) return false;
+  let food = 0;
+  let ammo = 0;
+  let surplus = false;
+  for (const e of inv) {
+    if (e.qty <= 0) continue;
+    const kind = getItem(e.item).kind;
+    if (kind === 'food') food += e.qty;
+    else if (kind === 'ammo') ammo += e.qty;
+    if (e.qty > reserveForKind(kind)) surplus = true;
+  }
+  return surplus || food < ESSENTIAL_FOOD_MIN || ammo < ESSENTIAL_AMMO_MIN;
+}
+
+/**
  * Ближайшая цель охоты для наблюдателя в `loc`: локация с живой дичью, минимальная
  * по pathCost (tie — меньший id), и min-eid особь в ней (детерминированная жертва,
  * закон №8). `null`, если живой дичи нигде нет/недостижима — тогда HUNT не выбирается.
@@ -228,6 +298,13 @@ export const TaskSelection: System = {
     // Локации с дичью — по возрастанию id (детерминизм tie-break охоты, закон №8).
     const animalLocs = Array.from(animalsByLoc.keys()).sort((a, b) => a - b) as LocationId[];
 
+    // ── Локации поселений (цель TRADE, задача 2.6): loc каждой сущности-поселения
+    // (Settlement+Position), по возрастанию id. Один раз до цикла NPC, как animalLocs.
+    // Пусто ⇒ TRADE недостижим (nearestLoc вернул бы null) ⇒ sTrade=−∞ (D-026).
+    const settlementLocSet = new Set<number>();
+    for (const s of queryEntities(ecs, [Settlement])) settlementLocSet.add(POS.loc[s] as number);
+    const settlementLocs = Array.from(settlementLocSet).sort((a, b) => a - b) as LocationId[];
+
     for (const eid of queryEntities(ecs, [Human, Alive, Needs])) {
       const loc = POS.loc[eid] as number;
       const locData = getLocation(loc as LocationId);
@@ -240,7 +317,8 @@ export const TaskSelection: System = {
       const safety = 1 - locData.danger;
       const survival = hasComponent(ecs, Skills, eid) ? (SKILL.survival[eid] as number) : 0;
       const waterHere = locData.water ? 1 : 0;
-      const foodInInv = hasFood(world.resources.get<InventoryEntry[]>(INVENTORY_KEY, eid));
+      const inv = world.resources.get<InventoryEntry[]>(INVENTORY_KEY, eid);
+      const foodInInv = hasFood(inv);
 
       // Цели-кандидаты (нужны и для оценок, и для записи выбранной задачи).
       const homeLoc = hasComponent(ecs, Home, eid) ? (HOME.loc[eid] as LocationId) : (loc as LocationId);
@@ -253,6 +331,12 @@ export const TaskSelection: System = {
       // меняется. workplace — loc рабочего места (цель WORK); задан только при hasJob.
       const hasJob = hasComponent(ecs, Job, eid);
       const workplace = hasJob ? (JOB.workplace[eid] as LocationId) : (loc as LocationId);
+      // Торговля (задача 2.6): ближайшее ДОСТИЖИМОЕ поселение — цель TRADE. `undefined`,
+      // если поселений в мире нет ИЛИ ни одно не достижимо (D-026) ⇒ TRADE исключён.
+      const nearestSettlement =
+        settlementLocs.length > 0 ? nearestLoc(loc, settlementLocs) : undefined;
+      // Повод торговать — причинно из инвентаря (нехватка эссеншелов ИЛИ избыток).
+      const canTrade = nearestSettlement !== undefined && !night && hasTradeReason(inv);
 
       // ── Оценки (веса из balance/utility, закон №7) ─────────────────────────
       const sSleep = W.fatigue * fatigue + (night ? W.night : 0) + safety * W.safe;
@@ -277,6 +361,13 @@ export const TaskSelection: System = {
       // Ночью и у безработных WORK исключён из argmax (−∞), как EAT без еды.
       const needCalm = Math.max(0, 1 - Math.max(hunger, thirst, fatigue, fear));
       const sWork = hasJob && !night ? W.work * safety * needCalm : -Infinity;
+      // TRADE (задача 2.6): ТОЛЬКО при причинном поводе (canTrade — есть повод +
+      // достижимое поселение + день). Гейт `safety · needCalm` как у WORK: торговля —
+      // не выживание, любая критическая нужда/страх гасят TRADE к нулю и пропускают
+      // вперёд EAT/DRINK/SLEEP/HUNT/FLEE; спокойный NPC у безопасного поселения выберет
+      // TRADE над FORAGE/REST-фоллбэком (сбыть излишек/докупить эссеншел). Нет повода/
+      // поселений/ночь ⇒ −∞ (исключён из argmax, как EAT без еды).
+      const sTrade = canTrade ? W.trade * safety * needCalm : -Infinity;
 
       // ── argmax по возрастанию кода TaskKind + строгое `>` ⇒ tie → меньший код
       // (D-020, НЕ rng). Порядок массива ОБЯЗАН быть по возрастанию кода.
@@ -289,6 +380,7 @@ export const TaskSelection: System = {
         [TaskKind.REST, sRest],
         [TaskKind.FLEE, sFlee],
         [TaskKind.WORK, sWork],
+        [TaskKind.TRADE, sTrade],
       ];
       let kind: TaskKind = TaskKind.FORAGE;
       let best = -Infinity;
@@ -321,6 +413,13 @@ export const TaskSelection: System = {
           // hasJob гарантировано: иначе sWork=−∞ и WORK не выбран. Цель — рабочее
           // место (Job.workplace); уже на месте ⇒ targetLoc==loc (Movement no-op).
           targetLoc = workplace;
+          break;
+        case TaskKind.TRADE:
+          // canTrade гарантирует nearestSettlement!==undefined (иначе sTrade=−∞ и TRADE
+          // не выбран). Цель — ближайшее поселение; уже на месте ⇒ targetLoc==loc
+          // (Movement no-op, Trade сработает у стоящего NPC). targetEid не нужен —
+          // Trade находит поселение по loc сам (systems/trade.ts).
+          targetLoc = nearestSettlement as LocationId;
           break;
         // EAT/FORAGE/REST — на месте (target = loc, уже проставлено).
         default:

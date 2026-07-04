@@ -12,7 +12,9 @@
  *  - targetLoc всегда валиден/достижим; HUNT только при наличии живой дичи;
  *  - причинность через штампы: TaskSelection+Movement, HUNT в др. локацию →
  *    task/selected→move/departed→move/arrived связаны без скана лога;
- *  - RESUME P0: непрерывный прогон === split через save/load (Task + лог task/selected).
+ *  - RESUME P0: непрерывный прогон === split через save/load (Task + лог task/selected);
+ *  - WORK (2.4) и TRADE (2.6): выбор из состояния (Job/инвентарь+обстановка), гейт
+ *    safety·needCalm, ночь/критическая нужда/отсутствие цели исключают их (−∞).
  *
  * Нужды в шкале 0..100 (нормируются /NEED_MAX внутри системы). Мир свежий на тест;
  * addComponent зануляет слот (D-024), значения ставим явно.
@@ -22,7 +24,7 @@ import { describe, it, expect } from 'vitest';
 import type { EntityId, LocationId, Seed, SimEvent, Tick } from '@zona/shared';
 import { createSimWorld, type SimWorld } from '../core/world';
 import { spawnEntity, addComponent, removeComponent, hasComponent, queryEntities } from '../core/ecs';
-import { Position, Needs, Health, Skills, Home, Animal, Human, Alive, Job, Task, TaskKind } from '../core/components';
+import { Position, Needs, Health, Skills, Home, Animal, Human, Alive, Job, Settlement, Task, TaskKind } from '../core/components';
 import { createScheduler, type Scheduler } from '../core/scheduler';
 import { serialize, deserialize, hashSnapshot } from '../core/snapshot';
 import { HEALTH_MAX } from '../balance/needs';
@@ -1147,6 +1149,169 @@ describe('WORK: смена не создаёт и не двигает предм
     const types = new Set(w.bus.log.map((e) => e.type));
     for (const t of types) {
       expect(t.startsWith('task/') || t.startsWith('move/')).toBe(true);
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TRADE (задача 2.6): выбор НАМЕРЕНИЯ торговать из состояния инвентаря + обстановки.
+// Причинно (закон №2): повод — нехватка эссеншелов ИЛИ избыток на сбыт; гейт
+// safety·needCalm как у WORK; ночь и отсутствие поселений исключают TRADE (−∞).
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Единица инвентаря для тестов (форма worldgen/Trade). */
+interface InvEntry {
+  readonly item: string;
+  readonly qty: number;
+}
+
+/** Селит сущность-поселение (Settlement + Position) в локации `loc` — цель TRADE. */
+function placeSettlement(world: SimWorld, loc: number): EntityId {
+  const eid = spawnEntity(world.ecs);
+  addComponent(world.ecs, Position, eid);
+  POS.loc[eid] = loc;
+  POS.dest[eid] = loc;
+  addComponent(world.ecs, Settlement, eid);
+  return eid;
+}
+
+/** Ставит инвентарь NPC напрямую (обход food-хелпера placeStalker). */
+function setInv(world: SimWorld, eid: EntityId, inv: readonly InvEntry[]): void {
+  world.resources.set('inventory', eid, inv);
+}
+
+/** Сбалансированный инвентарь БЕЗ повода: еда==keep, патроны==keep, ничего лишнего. */
+const BALANCED_INV: readonly InvEntry[] = [
+  { item: 'canned', qty: 4 }, // food: keep=4 ⇒ ни нехватки (≥2), ни избытка (не >4)
+  { item: 'ammo_9mm', qty: 16 }, // ammo: keep=16 ⇒ ни нехватки (≥8), ни избытка (не >16)
+];
+/** Тот же баланс + один артефакт (kind без резерва ⇒ ЛЮБОЙ qty = избыток на сбыт). */
+const SURPLUS_INV: readonly InvEntry[] = [
+  { item: 'canned', qty: 4 },
+  { item: 'ammo_9mm', qty: 16 },
+  { item: 'artifact_medusa', qty: 1 }, // избыток (reserve 0) ⇒ ПОВОД торговать
+];
+
+describe('TRADE: намерение торговать выводится из инвентаря и обстановки (закон №2)', () => {
+  it('спокойный NPC днём с ИЗБЫТКОМ у поселения → TRADE, target = поселение (на месте)', () => {
+    const w = createSimWorld(400 as Seed);
+    placeSettlement(w, 0); // Кордон (safety 0.95)
+    const eid = placeStalker(w, { loc: 0, home: 0 }); // все нужды 0, спокоен
+    setInv(w, eid, SURPLUS_INV);
+    evalAt(w, DAY_TICK);
+    expect(TSK.kind[eid]).toBe(TaskKind.TRADE);
+    expect(TSK.targetLoc[eid]).toBe(0); // поселение на текущей loc ⇒ Movement no-op
+    expect(TSK.targetEid[eid]).toBe(0); // Trade находит поселение по loc, targetEid не нужен
+  });
+
+  it('спрос на эссеншелы (мало еды/патронов) — тоже повод: спокойный NPC → TRADE', () => {
+    const w = createSimWorld(401 as Seed);
+    placeSettlement(w, 0);
+    const eid = placeStalker(w, { loc: 0, home: 0 });
+    setInv(w, eid, [{ item: 'ammo_9mm', qty: 2 }]); // ammo 2 < ESSENTIAL_AMMO_MIN(8), еды 0 < 2
+    evalAt(w, DAY_TICK);
+    expect(TSK.kind[eid]).toBe(TaskKind.TRADE);
+  });
+
+  it('НЕТ повода (баланс эссеншелов, ничего лишнего) → НЕ TRADE (sTrade=−∞)', () => {
+    const w = createSimWorld(402 as Seed);
+    placeSettlement(w, 0);
+    const eid = placeStalker(w, { loc: 0, home: 0 });
+    setInv(w, eid, BALANCED_INV);
+    evalAt(w, DAY_TICK);
+    expect(TSK.kind[eid]).not.toBe(TaskKind.TRADE); // торговать незачем — не идём «в пустоту»
+  });
+
+  it('контраст повода на ОДНОМ срезе: +артефакт превращает НЕ-TRADE в TRADE', () => {
+    // Тот же спокойный NPC у поселения: с BALANCED — не торгует, с SURPLUS — торгует.
+    // Доказывает, что решает ИМЕННО повод из инвентаря, а не прочая обстановка.
+    const wNo = createSimWorld(403 as Seed);
+    placeSettlement(wNo, 0);
+    const noReason = placeStalker(wNo, { loc: 0, home: 0 });
+    setInv(wNo, noReason, BALANCED_INV);
+    evalAt(wNo, DAY_TICK);
+    expect(TSK.kind[noReason]).not.toBe(TaskKind.TRADE);
+
+    const wYes = createSimWorld(403 as Seed);
+    placeSettlement(wYes, 0);
+    const withReason = placeStalker(wYes, { loc: 0, home: 0 });
+    setInv(wYes, withReason, SURPLUS_INV);
+    evalAt(wYes, DAY_TICK);
+    expect(TSK.kind[withReason]).toBe(TaskKind.TRADE);
+  });
+
+  it('НЕТ поселений в мире → TRADE недостижим (sTrade=−∞), даже при явном избытке', () => {
+    const w = createSimWorld(404 as Seed);
+    // Поселение НЕ создаём: settlementLocs пусто ⇒ nearestLoc был бы null (D-026).
+    const eid = placeStalker(w, { loc: 0, home: 0 });
+    setInv(w, eid, SURPLUS_INV);
+    evalAt(w, DAY_TICK);
+    expect(TSK.kind[eid]).not.toBe(TaskKind.TRADE);
+  });
+
+  it('КРИТИЧЕСКАЯ нужда гасит TRADE: голодный с едой у поселения → EAT, не TRADE', () => {
+    const w = createSimWorld(405 as Seed);
+    placeSettlement(w, 0);
+    // Повод торговать есть (артефакт), но голод у потолка ⇒ needCalm→0 гасит TRADE,
+    // а EAT растёт с голодом. Выживание вперёд торговли.
+    const eid = placeStalker(w, { loc: 0, home: 0, hunger: 92, food: true });
+    setInv(w, eid, [{ item: 'canned', qty: 2 }, { item: 'artifact_medusa', qty: 1 }]);
+    evalAt(w, DAY_TICK);
+    expect(TSK.kind[eid]).toBe(TaskKind.EAT);
+    expect(TSK.kind[eid]).not.toBe(TaskKind.TRADE);
+  });
+
+  it('НОЧЬЮ TRADE исключён (рынок закрыт): тот же повод днём→TRADE, ночью→НЕ TRADE', () => {
+    const wDay = createSimWorld(406 as Seed);
+    placeSettlement(wDay, 0);
+    const day = placeStalker(wDay, { loc: 0, home: 0 });
+    setInv(wDay, day, SURPLUS_INV);
+    evalAt(wDay, DAY_TICK);
+    expect(TSK.kind[day]).toBe(TaskKind.TRADE);
+
+    const wNight = createSimWorld(406 as Seed);
+    placeSettlement(wNight, 0);
+    const night = placeStalker(wNight, { loc: 0, home: 0 });
+    setInv(wNight, night, SURPLUS_INV);
+    evalAt(wNight, NIGHT_TICK);
+    expect(TSK.kind[night]).not.toBe(TaskKind.TRADE); // ночью не выходит торговать
+  });
+
+  it('targetLoc = БЛИЖАЙШЕЕ поселение: NPC у loc3, поселения в 5(рядом) и 0(дальше) → цель 5', () => {
+    const w = createSimWorld(407 as Seed);
+    placeSettlement(w, 5); // Бар — сосед loc3 (1 хоп)
+    placeSettlement(w, 0); // Кордон — дальше (loc3→1→0)
+    const eid = placeStalker(w, { loc: 3, home: 3 }); // спокоен, нужды 0
+    setInv(w, eid, SURPLUS_INV);
+    evalAt(w, DAY_TICK);
+    expect(TSK.kind[eid]).toBe(TaskKind.TRADE);
+    expect(TSK.targetLoc[eid]).toBe(5); // ближайшее по edgeLen поселение (не текущая loc)
+    expect(TSK.targetLoc[eid]).not.toBe(3); // цель ≠ текущая ⇒ Movement реально ведёт (не latent idle)
+  });
+
+  it('смена задачи на TRADE публикует task/selected (kind=TRADE) и штампует Task.causeEvent', () => {
+    const w = createSimWorld(408 as Seed);
+    placeSettlement(w, 0);
+    const eid = placeStalker(w, { loc: 0, home: 0 });
+    setInv(w, eid, SURPLUS_INV);
+    evalAt(w, DAY_TICK);
+    const evs = taskEvents(w, eid);
+    expect(evs).toHaveLength(1);
+    expect((evs[0]!.payload as { kind: number }).kind).toBe(TaskKind.TRADE);
+    expect((evs[0]!.payload as { targetLoc: number }).targetLoc).toBe(0);
+    expect(TSK.causeEvent[eid]).toBe(evs[0]!.id); // штамп причинности (D-030)
+  });
+
+  it('детерминизм: TRADE-срез, 3 прогона одного seed → идентичный выбор и цель', () => {
+    for (let i = 0; i < 3; i++) {
+      const w = createSimWorld(409 as Seed);
+      placeSettlement(w, 5);
+      placeSettlement(w, 0);
+      const eid = placeStalker(w, { loc: 3, home: 3 });
+      setInv(w, eid, SURPLUS_INV);
+      evalAt(w, DAY_TICK);
+      expect(TSK.kind[eid]).toBe(TaskKind.TRADE);
+      expect(TSK.targetLoc[eid]).toBe(5);
     }
   });
 });
