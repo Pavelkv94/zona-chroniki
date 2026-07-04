@@ -78,6 +78,12 @@ export const WORLD_CAPACITY = 4096;
  * задача со score>0). АВТОРИТЕТНУЮ семантику/полноту таксономии задач фиксирует
  * task-selection (1.8, behavior-engineer) через sim-architect; здесь — стабильное
  * кодовое пространство, на которое ссылается поле компонента.
+ *
+ * ФАЗА 2 (задача 2.1/2.8): коды 7–10 добавлены APPEND-ONLY в конец (существующие
+ * 0–6 НЕ тронуты, порядок формата снапшота стабилен, закон №8): WORK/TRADE/ROB/
+ * SEARCH — работа на поселение (2.4), торговля (2.6), грабёж (2.12), поход за
+ * артефактом (2.10). Семантику этих задач фиксируют их системы Фазы 2; здесь —
+ * лишь стабильные ui8-коды, на которые ссылается `Task.kind`.
  */
 export const TaskKind = {
   /** Спать (восстановление fatigue, обычно дома). */
@@ -94,6 +100,14 @@ export const TaskKind = {
   REST: 5,
   /** Бегство от угрозы (fear). */
   FLEE: 6,
+  /** Работа на поселение-работодателя (Job.employer; система 2.4). */
+  WORK: 7,
+  /** Торговля с торговцем/поселением (targetEid — контрагент; система 2.6). */
+  TRADE: 8,
+  /** Грабёж цели (targetEid — жертва; система 2.12). */
+  ROB: 9,
+  /** Поход за артефактом в аномальное поле (targetLoc/targetEid — поле; система 2.10). */
+  SEARCH: 10,
 } as const;
 
 /** Тип кода задачи (значение `TaskKind.*`). */
@@ -211,6 +225,62 @@ export const WorldClock: ComponentRef = defineComponentT(
   WORLD_CAPACITY,
 );
 
+// ── Фаза 2: SoA data-компоненты без тега (носительство = тип, D-046) ──────────
+//
+// Settlement/AnomalyField/Job — как Animal: наличие ДАННЫХ-компонента само задаёт
+// «роль» сущности (поселение / аномальное поле / трудоустроенный NPC), отдельного
+// тега нет (D-046, D-019). «Холодное» носительство (склад/касса поселения, наземный
+// лут поля) живёт под теми же ключами ResourceStore 'inventory'/'money' на ТЕХ ЖЕ
+// eid (D-046, D-007) — здесь только числовые SoA-поля. Здесь лишь ОПРЕДЕЛЕНИЯ; их
+// создаёт/наполняет worldgen 2.2 и системы 2.2/2.3/2.9 (в текущем прогоне носителей
+// нет → в снапшот эти компоненты не пишутся, голдены стабильны).
+
+/**
+ * Поселение-сущность (D-046). `morale` — боевой дух/довольство 0..1 (падает от
+ * голода/угроз, растёт от достатка); `security` — защищённость 0..1 (гарнизон/
+ * стены, снижает успех грабежа 2.12); `buildTarget` — код текущего проекта
+ * стройки (ui8; 0 = ничего не строится — совпадает с занулением addComponent,
+ * D-024); `buildProgress` — прогресс стройки 0..1. Склад/касса поселения — cold
+ * 'inventory'/'money' на этом же eid (D-046), НЕ здесь. Экономический AI/строй
+ * фиксирует система 2.3; здесь — стабильная раскладка полей (порядок = снапшот,
+ * закон №8). Поля в объявленном порядке: morale, security, buildTarget, buildProgress.
+ */
+export const Settlement: ComponentRef = defineComponentT(
+  {
+    morale: Types.f32,
+    security: Types.f32,
+    buildTarget: Types.ui8,
+    buildProgress: Types.f32,
+  },
+  WORLD_CAPACITY,
+);
+
+/**
+ * Аномальное поле (D-046). `charge` — заряд/интенсивность 0..1 (растёт к выбросу,
+ * опасность прохода 2.10); `tier` — уровень поля (ui8; влияет на ценность
+ * рождаемых артефактов). Наземный лут поля (артефакты до подбора) — cold
+ * 'inventory' на этом же eid (D-046), НЕ здесь. Генезис/жизненный цикл полей
+ * фиксирует система 2.9 (ecosystem); здесь — стабильная раскладка полей. Поля в
+ * объявленном порядке: charge, tier.
+ */
+export const AnomalyField: ComponentRef = defineComponentT(
+  { charge: Types.f32, tier: Types.ui8 },
+  WORLD_CAPACITY,
+);
+
+/**
+ * Трудоустройство NPC (D-046). Носительство = «сущность работает на поселение»
+ * (как Animal отделяет животных): у безработных NPC компонента нет. `workplace` —
+ * локация рабочего места (ui32, `Location.id`); `employer` — eid поселения-
+ * работодателя (ссылка-eid БЕЗ ремапа при load, D-011, как `Task.targetEid`).
+ * Экономику труда (наём/увольнение/зарплата) фиксирует система 2.4; здесь —
+ * стабильная раскладка полей. Поля в объявленном порядке: workplace, employer.
+ */
+export const Job: ComponentRef = defineComponentT(
+  { workplace: Types.ui32, employer: Types.eid },
+  WORLD_CAPACITY,
+);
+
 // ── Теги (маркеры без полей, D-019) ──────────────────────────────────────────
 
 /** Тег: сущность — человек (NPC-сталкер). «Холодные» данные — в ResourceStore. */
@@ -231,14 +301,21 @@ export const Alive: ComponentRef = defineTag(WORLD_CAPACITY);
 export const DOMAIN_COMPONENTS: readonly ComponentMeta[] = [
   { name: 'alive', ref: Alive, fields: [] },
   { name: 'animal', ref: Animal, fields: ['species', 'herd'] },
+  // Фаза 2 (D-046): 'anomalyfield' сортируется между 'animal' (ani…) и 'corpse'
+  // (ano… > ani…, < c…). Поля в объявленном порядке.
+  { name: 'anomalyfield', ref: AnomalyField, fields: ['charge', 'tier'] },
   { name: 'corpse', ref: Corpse, fields: [] },
   // causality-поля (D-030, 1.2b) добавлены В КОНЕЦ списков полей — append сохраняет
   // порядок снапшота (закон №8): lethalCause/moveCause/causeEvent.
   { name: 'health', ref: Health, fields: ['hp', 'lethalCause'] },
   { name: 'home', ref: Home, fields: ['loc'] },
   { name: 'human', ref: Human, fields: [] },
+  // Фаза 2 (D-046): 'job' между 'human' и 'needs'.
+  { name: 'job', ref: Job, fields: ['workplace', 'employer'] },
   { name: 'needs', ref: Needs, fields: ['hunger', 'thirst', 'fatigue', 'fear'] },
   { name: 'position', ref: Position, fields: ['loc', 'dest', 'etaTicks', 'moveCause'] },
+  // Фаза 2 (D-046): 'settlement' между 'position' и 'skills' (se… < sk…).
+  { name: 'settlement', ref: Settlement, fields: ['morale', 'security', 'buildTarget', 'buildProgress'] },
   { name: 'skills', ref: Skills, fields: ['shooting', 'survival', 'stealth'] },
   { name: 'task', ref: Task, fields: ['kind', 'targetLoc', 'targetEid', 'startedTick', 'causeEvent'] },
   { name: 'worldclock', ref: WorldClock, fields: ['weather', 'weatherSince'] },

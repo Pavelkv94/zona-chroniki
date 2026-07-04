@@ -40,6 +40,9 @@ import {
   Home,
   Animal,
   WorldClock,
+  Settlement,
+  AnomalyField,
+  Job,
   Human,
   Corpse,
   Alive,
@@ -63,12 +66,15 @@ describe('реестр наполнен и отсортирован (D-019, за
     expect(names).toEqual([
       'alive',
       'animal',
+      'anomalyfield',
       'corpse',
       'health',
       'home',
       'human',
+      'job',
       'needs',
       'position',
+      'settlement',
       'skills',
       'task',
       'worldclock',
@@ -98,6 +104,15 @@ describe('реестр наполнен и отсортирован (D-019, за
     expect(byName.get('home')?.fields).toEqual(['loc']);
     expect(byName.get('animal')?.fields).toEqual(['species', 'herd']);
     expect(byName.get('worldclock')?.fields).toEqual(['weather', 'weatherSince']);
+    // Фаза 2 (D-046): data-компоненты без тега, поля в объявленном порядке.
+    expect(byName.get('settlement')?.fields).toEqual([
+      'morale',
+      'security',
+      'buildTarget',
+      'buildProgress',
+    ]);
+    expect(byName.get('anomalyfield')?.fields).toEqual(['charge', 'tier']);
+    expect(byName.get('job')?.fields).toEqual(['workplace', 'employer']);
     // Теги — без полей.
     expect(byName.get('human')?.fields).toEqual([]);
     expect(byName.get('corpse')?.fields).toEqual([]);
@@ -115,6 +130,7 @@ describe('реестр наполнен и отсортирован (D-019, за
 
 describe('перечисления-коды (структура, не дублируют контент)', () => {
   it('TaskKind — плотные ui8-коды с 0; FORAGE/REST присутствуют (fallback D-020)', () => {
+    // Коды 0–6 (Фаза 1) НЕ тронуты append-ом Фазы 2 (стабильность формата, закон №8).
     expect(TaskKind.SLEEP).toBe(0);
     expect(TaskKind.EAT).toBe(1);
     expect(TaskKind.DRINK).toBe(2);
@@ -127,6 +143,18 @@ describe('перечисления-коды (структура, не дубли
     expect(new Set(codes).size).toBe(codes.length);
     for (const c of codes) {
       expect(c).toBeGreaterThanOrEqual(0);
+      expect(c).toBeLessThan(256);
+    }
+  });
+
+  it('Фаза 2: WORK/TRADE/ROB/SEARCH — append-only коды 7–10, уникальны, влезают в ui8', () => {
+    expect(TaskKind.WORK).toBe(7);
+    expect(TaskKind.TRADE).toBe(8);
+    expect(TaskKind.ROB).toBe(9);
+    expect(TaskKind.SEARCH).toBe(10);
+    // Новые коды не пересекаются с 0–6 и попадают в ui8.
+    for (const c of [TaskKind.WORK, TaskKind.TRADE, TaskKind.ROB, TaskKind.SEARCH]) {
+      expect(Number.isInteger(c)).toBe(true);
       expect(c).toBeLessThan(256);
     }
   });
@@ -192,6 +220,21 @@ describe('round-trip КАЖДОГО компонента через ГЛОБАЛ
   });
   it('WorldClock (ui8/ui32)', () => {
     roundTrip(WorldClock, { weather: WEATHER_CODE.storm, weatherSince: 500 });
+  });
+  // Фаза 2 (D-046): границы типов f32/ui32/ui8/eid переживают round-trip.
+  it('Settlement (f32/f32/ui8/f32) — границы полей', () => {
+    roundTrip(Settlement, {
+      morale: Math.fround(1 / 3),
+      security: 0.875,
+      buildTarget: 255, // max ui8
+      buildProgress: 0.5,
+    });
+  });
+  it('AnomalyField (f32/ui8) — границы полей', () => {
+    roundTrip(AnomalyField, { charge: Math.fround(0.1), tier: 255 });
+  });
+  it('Job (ui32/eid) — границы полей (eid-ссылка без ремапа, D-011)', () => {
+    roundTrip(Job, { workplace: 4294967295, employer: 123 });
   });
 
   it('все данные-компоненты вместе на одной сущности — полный снапшот round-trip', () => {
@@ -302,6 +345,41 @@ describe('addComponent зануляет поля переиспользован�
     const col = snap.components['needs'] as unknown as { eids: number[]; fields: { hunger: number[] } };
     expect(col.eids).toEqual([reborn]);
     expect(col.fields.hunger).toEqual([0]);
+  });
+
+  it('Фаза 2: reuse eid зануляет Settlement/AnomalyField/Job (D-046 + D-024)', () => {
+    const w = createSimWorld(42 as Seed);
+    const dead = spawnEntity(w.ecs);
+    // Носитель всех трёх Фаза-2-компонентов с ненулевыми полями.
+    addComponent(w.ecs, Settlement, dead);
+    addComponent(w.ecs, AnomalyField, dead);
+    addComponent(w.ecs, Job, dead);
+    const s = cols(Settlement);
+    const a = cols(AnomalyField);
+    const j = cols(Job);
+    s['morale']![dead] = 0.9;
+    s['security']![dead] = 0.8;
+    s['buildTarget']![dead] = 7;
+    s['buildProgress']![dead] = 0.4;
+    a['charge']![dead] = 0.6;
+    a['tier']![dead] = 3;
+    j['workplace']![dead] = 99;
+    j['employer']![dead] = 5;
+    destroyEntity(w, dead); // массивы всё ещё держат значения покойника
+
+    const reborn = spawnEntity(w.ecs);
+    expect(reborn).toBe(dead); // reuse eid из freelist
+    addComponent(w.ecs, Settlement, reborn);
+    addComponent(w.ecs, AnomalyField, reborn);
+    addComponent(w.ecs, Job, reborn);
+    // Зануление на входе (D-024): покойник не просвечивает.
+    for (const f of ['morale', 'security', 'buildTarget', 'buildProgress']) {
+      expect(s[f]![reborn]).toBe(0);
+    }
+    expect(a['charge']![reborn]).toBe(0);
+    expect(a['tier']![reborn]).toBe(0);
+    expect(j['workplace']![reborn]).toBe(0);
+    expect(j['employer']![reborn]).toBe(0);
   });
 });
 
