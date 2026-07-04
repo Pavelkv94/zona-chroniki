@@ -95,6 +95,24 @@
  * Ближайшая loc считается детерминированным Дейкстрой (pathfinding), tie по
  * стоимости — меньший id локации.
  *
+ * ── ОБХОД МАРШРУТА (задача 2.13, D-050/D-063 — читается ЗДЕСЬ) ────────────────
+ * NPC, помеченный обходом (`avoidLoc` в ResourceStore после ограбления, addAvoid 2.13),
+ * НЕ ВЫБИРАЕТ избегаемую локацию ЦЕЛЬЮ движения, пока `untilTick > tick`. Механизм —
+ * ИСКЛЮЧЕНИЕ избегаемых loc из множеств КАНДИДАТОВ-ЦЕЛЕЙ ПЕРЕД поиском ближайшей (тот же
+ * приём, что фильтр FLEE по safestNeighbor): дичь (`animalLocs`), вода (`WATER_LOCS`),
+ * поселения (`settlementLocs`), поля с артефактом (`artifactFieldLocs`) прогоняются через
+ * `notAvoided`; сосед для FLEE выбирается из НЕизбегаемых. Если единственный кандидат
+ * задачи избегаем — `nearestLoc` вернёт `undefined`/`null` ⇒ соответствующая оценка
+ * становится −∞ (HUNT/TRADE/SEARCH исключаются из argmax), и NPC выбирает ДРУГУЮ задачу
+ * или другую (неизбегаемую) цель того же вида — маршрут огибает опасное место. НЕ
+ * фильтруется: текущая loc (задачи-на-месте EAT/FORAGE/REST и питьё в воде под ногами —
+ * обход про маршрут, не про запрет стоять) и дом (SLEEP → Home.loc). Тупик обхода (ВСЕ
+ * соседи/кандидаты избегаемы) — деградирует к выбору без фильтра (выживание/движение
+ * важнее обхода, закон №4 — не idle). NO-OP-ГАРАНТИЯ (голдены Фазы 1): у NPC без
+ * avoid-записей `getAvoids` пуст ⇒ `notAvoided` отдаёт исходные списки (та же ссылка),
+ * предикат FLEE не передаётся ⇒ путь выбора задач байт-в-байт прежний. В живом мире
+ * avoidLoc пуст у всех (RobberyMemory не в конвейере, ROB дремлет) ⇒ обход не влияет.
+ *
  * ── Смена задачи и штамп причинности (D-030/D-032) ───────────────────────────
  * Task пишется и `task/selected` публикуется ТОЛЬКО когда выбранная тройка
  * (kind,targetLoc,targetEid) ОТЛИЧАЕТСЯ от текущего Task (или Task ещё нет). Пока
@@ -135,7 +153,7 @@ import {
   TRADE_KEEP_DRINK,
   TRADE_KEEP_MEDICAL,
 } from '../balance/economy';
-import { getRelation as getMemoryRelation, factionReputation, entitySubject } from './memory';
+import { getRelation as getMemoryRelation, factionReputation, entitySubject, getAvoids, isAvoided } from './memory';
 import { isNight } from './daynight';
 
 /** Ключ ResourceStore со списком видимых контактов наблюдателя (Perception 1.7, D-023). */
@@ -315,16 +333,33 @@ function nearestHunt(
   return { loc: targetLoc, eid: herd[0] as EntityId };
 }
 
-/** Соседняя локация с наименьшим danger (tie — меньший id). Если соседей нет — сама `loc`. */
-function safestNeighbor(loc: number): LocationId {
+/**
+ * Соседняя локация с наименьшим danger (tie — меньший id). Если соседей нет — сама `loc`.
+ * `avoid` (задача 2.13, обход маршрута): избегаемые соседи ИСКЛЮЧАЮТСЯ из выбора — жертва
+ * не бежит в помеченную локацию. `undefined` (нет активного обхода) ⇒ прежний путь
+ * байт-в-байт (голдены целы). Если ВСЕ соседи избегаемы (тупик обхода) — падаем на выбор
+ * БЕЗ фильтра (выживание/движение важнее обхода: не стоять столбом при страхе, закон №4).
+ */
+function safestNeighbor(loc: number, avoid?: (l: number) => boolean): LocationId {
   const nbs = neighbors(loc as LocationId);
   let best = loc as LocationId;
   let bestDanger = Infinity;
   for (const nb of nbs) {
+    if (avoid !== undefined && avoid(nb)) continue; // избегаемого соседа не рассматриваем
     const d = getLocation(nb).danger;
     if (d < bestDanger) {
       bestDanger = d;
       best = nb;
+    }
+  }
+  // Все соседи избегаемы (best не сдвинулся с loc, хотя соседи есть) ⇒ выбор без фильтра.
+  if (avoid !== undefined && best === (loc as LocationId) && nbs.length > 0) {
+    for (const nb of nbs) {
+      const d = getLocation(nb).danger;
+      if (d < bestDanger) {
+        bestDanger = d;
+        best = nb;
+      }
     }
   }
   return best;
@@ -536,11 +571,28 @@ export const TaskSelection: System = {
       const inv = world.resources.get<InventoryEntry[]>(INVENTORY_KEY, eid);
       const foodInInv = hasFood(inv);
 
+      // ── Обход маршрута (задача 2.13, D-050/D-063) ──────────────────────────
+      // Локации, которые NPC ИЗБЕГАЕТ (пометил после ограбления, addAvoid 2.13):
+      // активная запись (untilTick>tick) ИСКЛЮЧАЕТ локацию из КАНДИДАТОВ-ЦЕЛЕЙ
+      // движения (NPC «не идёт туда»), пока срок не истёк (MemoryDecay снимет). Текущая
+      // loc для задач-НА-МЕСТЕ (EAT/FORAGE/REST/питьё в воде под ногами) НЕ фильтруется:
+      // обход — про МАРШРУТ (куда идти), а не про запрет находиться там, где уже стоишь.
+      // У всех, кто не был ограблен, `avoids` пуст ⇒ `notAvoided` возвращает исходный
+      // список (та же ссылка), `avoid`-предикат не передаётся ⇒ выбор задач байт-в-байт
+      // прежний (голдены Фазы 1 целы — в живом мире avoidLoc всегда пуст).
+      const avoids = getAvoids(world.resources, eid);
+      const hasAvoids = avoids.length > 0;
+      const avoidLoc = (l: number): boolean => hasAvoids && isAvoided(world.resources, eid, l, tick);
+      const notAvoided = (locs: readonly LocationId[]): readonly LocationId[] =>
+        hasAvoids ? locs.filter((l) => !avoidLoc(l)) : locs;
+
       // Цели-кандидаты (нужны и для оценок, и для записи выбранной задачи).
       const homeLoc = hasComponent(ecs, Home, eid) ? (HOME.loc[eid] as LocationId) : (loc as LocationId);
-      const hunt = nearestHunt(loc, animalLocs, animalsByLoc);
-      const drinkLoc = waterHere ? (loc as LocationId) : (nearestLoc(loc, WATER_LOCS) ?? (loc as LocationId));
-      const fleeLoc = safestNeighbor(loc);
+      const hunt = nearestHunt(loc, notAvoided(animalLocs), animalsByLoc);
+      const drinkLoc = waterHere
+        ? (loc as LocationId)
+        : (nearestLoc(loc, notAvoided(WATER_LOCS)) ?? (loc as LocationId));
+      const fleeLoc = safestNeighbor(loc, hasAvoids ? avoidLoc : undefined);
       const gameAbund = hunt !== null ? getLocation(hunt.loc).game : 0;
       // Трудоустройство (задача 2.4): носительство Job = «работает на поселение».
       // У безработных Job нет ⇒ WORK недоступен (score −∞), поведение не-Job NPC не
@@ -550,14 +602,14 @@ export const TaskSelection: System = {
       // Торговля (задача 2.6): ближайшее ДОСТИЖИМОЕ поселение — цель TRADE. `undefined`,
       // если поселений в мире нет ИЛИ ни одно не достижимо (D-026) ⇒ TRADE исключён.
       const nearestSettlement =
-        settlementLocs.length > 0 ? nearestLoc(loc, settlementLocs) : undefined;
+        settlementLocs.length > 0 ? nearestLoc(loc, notAvoided(settlementLocs)) : undefined;
       // Повод торговать — причинно из инвентаря (нехватка эссеншелов ИЛИ избыток).
       const canTrade = nearestSettlement !== undefined && !night && hasTradeReason(inv);
       // Поход за артефактом (задача 2.10): ближайшее ДОСТИЖИМОЕ поле с артефактом на
       // земле — цель SEARCH. `undefined`, если таких полей нет ИЛИ недостижимы (D-026)
       // ⇒ SEARCH исключён. Повод причинен: артефакт ФИЗИЧЕСКИ лежит на луте поля.
       const nearestArtifactField =
-        artifactFieldLocs.length > 0 ? nearestLoc(loc, artifactFieldLocs) : undefined;
+        artifactFieldLocs.length > 0 ? nearestLoc(loc, notAvoided(artifactFieldLocs)) : undefined;
       const canSearch = nearestArtifactField !== undefined && !night;
       // Грабёж (задача 2.12, D-049/D-062): ROB доступен ТОЛЬКО членам ХИЩНОЙ фракции
       // (диспозиция `predatory` из factions.json — data-driven, закон №10; worldgen

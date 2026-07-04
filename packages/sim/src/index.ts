@@ -145,6 +145,15 @@ export {
 } from './systems/memory';
 export type { Subject, MemoryRecord, RelationEntry, AvoidEntry } from '@zona/shared';
 
+// Система RobberyMemory (2.13, D-063): ФОРМИРОВАНИЕ памяти об ограблении — реагирует на
+// `loot/transferred` (Encounters 2.11/D-060) и записывает ЖИВОЙ жертве память 'robbed' о
+// грабителе (causeEvent), портит к нему (и его фракции) отношение и метит место грабежа
+// избегаемым (addAvoid → обход маршрута читает TaskSelection). НЕ входит в
+// registerPhase1Systems и не создаётся worldgen (бандитов/ROB в живом мире нет ⇒
+// loot/transferred не эмитится ⇒ no-op) — экспорт как System для прогона в отдельном
+// планировщике и интеграции 2.16. Голдены Фазы 1 не сдвигаются.
+export { RobberyMemory } from './systems/robbery-memory';
+
 // Рождение ОДНОГО сталкера/NPC (рефактор 2.14a, D-059). Публична — чтобы
 // PopulationInflux (2.14/D-051, приток населения) спавнил новоприбывших ТЕМ ЖЕ
 // кодом, что и worldgen (новичок = стартовый сталкер бит-в-бит). Возвращает eid как
