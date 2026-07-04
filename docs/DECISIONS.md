@@ -889,3 +889,61 @@ D-033, безопасная охота), а не констант — хвост
 Затрагивает: balance/needs.ts, data/species.json; голдены cli.test/phase1-gate.test; render/animals/needs
 характеризующие тесты; docs/reports/phase1-balance.md. Хвосты Фазы 2: behavior (таргетинг/безопасная охота),
 economy+narrative (приток людей, GDD 4.7).
+
+## D-045 | Фаза 2 / задача 2.0 | 2026-07-04
+Решение: EconomyInvariant-предохранитель — ПЕРВЫМ. Учёт массы = Σ 'money' + Σ 'inventory' по ВСЕМ eid
+(NPC/трупы/поселения/аномальные поля единообразно, D-046); дельта тоталов сверяется с 5 леджер-событиями
+item/{produced,consumed,harvested,broughtIn,exported}. Переводы (торговля/грабёж) конс. — не логируются.
+Ретрофит дыр Фазы 1: TaskEffects.EAT→item/consumed(food), Encounters→item/consumed(ammo)+item/harvested(meat).
+Read-only чекер (НЕ System, хэш не трогает; sim:100days падает при нарушении). Базлайн — post-worldgen (t0).
+Причина: закон №3 глобально проверяем одной формулой; предохранитель до первого источника массы.
+Альтернативы: отдельная структура складов (дублирует inventory, рвёт единый учёт); инвариант как System
+(грязнит лог/хэш). Затрагивает: shared/events, task-effects/encounters (ретрофит), headless (чекер).
+
+## D-046 | Фаза 2 | 2026-07-04
+Решение: склады/касса поселения, наземный лут аномального поля, лут трупа — под ТЕМИ ЖЕ ключами
+'inventory'/'money' на соответствующих eid. Settlement{morale,security,buildTarget,buildProgress},
+AnomalyField{charge,tier}, Job{workplace,employer} — SoA data-компоненты без тега (носительство=тип, как Animal).
+memory/relations/avoidLoc — ResourceStore (plain JSON сорт. массивы, D-007/D-013), НЕ SoA.
+Причина: единый инвариант + бесплатная сериализация. Затрагивает: core/components+registry, world (ключи).
+
+## D-047 | Фаза 2 | 2026-07-04
+Решение: Цена — DERIVED, не хранится и не эвентится: price=f(basePrice, stockRatio) детерминированно.
+Заменяет GDD-9.2 «динамические цены» и убирает «вероятность». resume-safe (как день/ночь D-019).
+trade/executed несёт использованную цену; causedBy=Task.causeEvent покупателя.
+Альтернативы: хранить цену (resume-мина); price/changed со сканом лога (перф/причинность). Затрагивает: Trade.
+
+## D-048 | Фаза 2 | 2026-07-04
+Решение: Артефакт — заряд-порог, НЕ «вероятность» (правка GDD 4.4): AnomalyField.charge копится
+детерминированно, порог → artifact/spawned в наземный лут поля (физ. источник), добыча SEARCH → item/harvested.
+Полный выброс (предвестники/укрытие/подъём зомби) — Фаза 3. Затрагивает: ArtifactSpawn, data/items(артефакты).
+
+## D-049 | Фаза 2 | 2026-07-04
+Решение: Решение бандита о нападении — ДЕТЕРМИНИРОВАННАЯ оценка из состояния (закон №2), НЕ «X% шанс».
+ROB-utility = W.gain·lootProxy − W.risk·(наблюдаемая сила цели: Skills×оружие+hp+союзники в локации) −
+W.rel·relationPenalty. lootProxy по фракции/наблюдаемому (НЕ чтение инвентаря жертвы — запрет чит-AI).
+Грабёж одиночек/обход групп — эмерджентно. Единый резолвер D-022 (человек-vs-человек). Лут — перевод (конс.).
+Затрагивает: TaskSelection(ROB), Encounters(человек-vs-человек), balance/economy.
+
+## D-050 | Фаза 2 | 2026-07-04
+Решение: Память/отношения — ResourceStore: 'memory' (MemoryRecord[] с causeEvent в записи, конвенция D-038),
+'relations' ([subject,value] сорт.), 'avoidLoc' ([loc,untilTick] сорт.). MemoryDecay every:60 — затухание/prune
+~60 дней, чистка avoidLoc. Обход маршрута N дней читается TaskSelection. Фракционная репутация — derived.
+Затрагивает: systems/memory, TaskSelection, MemoryDecay.
+
+## D-051 | Фаза 2 | 2026-07-04
+Решение: Приток населения (GDD 4.7, закрывает демо-петлю D-043) — ПРИЧИННЫЙ порог, не «X% спавн/тик».
+attractiveness = детерминированное взвешенное окно событий лога (артефакт найден/богатый ушёл vs волны
+смертей/бандиты); порог → группа 1–3, генерация личности seeded (категория «генерация мира», D-021), вход в
+ENTRY_LOCATION (Кордон), инвентарь/деньги как item/broughtIn (источник — за Периметром). Затрагивает:
+PopulationInflux, рефактор spawnStalker (worldgen), balance.
+
+## D-052 | Фаза 2 | 2026-07-04
+Решение: Граница зон (плейбук 5.1): behavior-engineer — WORK/TRADE/ROB/SEARCH-выбор, память/отношения/обход,
+MemoryDecay. economy-engineer — Economy/Trade/Encounters-лут/экспорт/поселения/цены/артефакт-заряд/влюкс-генезис/
+EconomyInvariant/FactionAI. core-engineer — новые компоненты+сериализация, shared-типы, рефактор spawnStalker.
+narrative/ecosystem — Фаза 3. Порядок systems расширяется registerPhase2Systems (инвариант D-032, тест).
+Затрагивает: распределение задач Фазы 2.
+
+ПРИМЕЧАНИЕ: архитектор предложил эти решения как D-044..D-051; сдвинуты на +1 (D-045..D-052), т.к. D-044
+занят balance-решением Фазы 1.
