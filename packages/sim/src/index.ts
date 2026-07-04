@@ -228,3 +228,28 @@ export { participantsOf } from './narrative/significance';
 // сдвига голденов) ⇒ голдены Фазы 3 не двигаются; EconomyInvariant не затронут (не масса).
 export { Radio } from './systems/radio';
 export { RADIO_THRESHOLD, RADIO_JAMMING_WEATHER } from './balance/narrative';
+
+// Система Rumors (3.6, D-073): СЛУХИ — услышанный эфир (`radio/message`/`radio/relayed`)
+// РАСХОДИТСЯ МОЛВОЙ. РЕАКТИВНО (окно `bus.at([T−RUMOR_CADENCE .. T−1])`, закон №6, §5.1) на
+// каждое сообщение: слышащие в радиусе (локация вещания + соседи графа MAP, кроме говорящего)
+// пишут ПАМЯТЬ СЛУХА (isFirsthand=false, salience × доверие к источнику из relations/
+// factionReputation 2.15); болтливый слушатель (talkativeness >= RUMOR_RELAY_TALKATIVENESS,
+// D-071) пересказывает с ИСКАЖЕНИЕМ — `radio/relayed { speakerEid:relayer, sourceMessageId,
+// hop+1, templateId, params, isFirsthand:false }`, causedBy = sourceMessageId (D-030).
+// Искажение ЧИСТОЕ `fnv(sourceMessageId, relayerEid, hop)` (D-073, НЕ rng-поток): тон
+// ретранслятора + монотонный рост count («двое»→«отряд»→«банда», §8.2), hop клампится
+// RUMOR_MAX_HOP. Строку НЕ хранит (закон №5) — read-time renderMessage (3.4). НЕ в конвейере
+// до 3.7 ⇒ голдены Фазы 3 не двигаются; EconomyInvariant не затронут (радио-слух не масса,
+// addMemory двигает 'memory' дизъюнктный money/inventory).
+export { Rumors } from './systems/rumors';
+export {
+  RUMOR_CADENCE,
+  BASE_RUMOR_SALIENCE,
+  RUMOR_TRUST_BASE,
+  RUMOR_TRUST_SPREAD,
+  RUMOR_FACTION_TRUST_WEIGHT,
+  RUMOR_RELAY_TALKATIVENESS,
+  RUMOR_MAX_HOP,
+  RUMOR_COUNT_MIN_GROWTH,
+  RUMOR_COUNT_GROWTH_SPREAD,
+} from './balance/narrative';

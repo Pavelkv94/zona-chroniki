@@ -1897,3 +1897,68 @@ spawn-stalker.test.ts (голдены/счётчики/форма rng).
 Затрагивает: shared/events.ts (radio/message + RadioMessageParams), shared/index.ts (экспорт типа),
 sim/systems/radio.ts (новый), sim/balance/narrative.ts (RADIO_THRESHOLD/RADIO_JAMMING_WEATHER),
 sim/index.ts (экспорт Radio + констант), sim/systems/radio.test.ts (новый), docs/diagrams/radio-3.5.md.
+
+## D-073 | Фаза 3 / задача 3.6 | 2026-07-05
+Решение (система `Rumors` — СЛУХИ: услышанный эфир расходится молвой с ИСКАЖЕНИЕМ). ЗАМЫКАЕТ
+нарративный хребет Фазы 3 (GDD §8.2 «слухи», §5.1 «каждые 10 тиков»). Достраивает контракт
+Message/Rumor D-069/D-070: 3.5 эмитит первичный `radio/message` (isFirsthand=true), 3.6 даёт
+ему жизнь после эфира — память слушателей и искажённый пересказ. Слух — УТВЕРЖДЕНИЕ о мире, а
+НЕ факт: `isFirsthand=false`, слабее личного наблюдения.
+
+ЧТО СДЕЛАНО:
+1) СОБЫТИЕ `radio/relayed` (@zona/shared/events): payload `{speakerEid: ретранслятор, subjects,
+   loc?: точка вещания ретранслятора, sourceMessageId, hop, templateId, params, isFirsthand:false}`.
+   НЕ хранит строку (закон №5) — только `templateId + params` (уже искажённые); plain-строку
+   собирает `renderMessage` (3.4/D-069) на чтении. Значимость типа неизвестна ⇒ `UNKNOWN_WEIGHT`
+   (0.0): Radio/Chronicle (если бы шли) слух не переозвучивают/не летописят — молва не творит
+   собственной драмы в логе.
+2) СИСТЕМА `systems/rumors.ts` (`every: RUMOR_CADENCE`=10, §5.1; РЕАКТИВ на ОКНО закоммиченных
+   тиков `bus.at([T−RUMOR_CADENCE .. T−1])`, закон №6, как Chronicle/Radio). Каденция = размер
+   окна ⇒ идеальная плитка (run@10 читает [0..9], run@20 — [10..19]): каждый тик РОВНО раз. НЕ
+   выдумывает событий (закон №1: реагирует на прозвучавший эфир). Обрабатывает `radio/message`
+   И `radio/relayed` в окне.
+3) СЛЫШАЩИЕ (hearers): живые Human (`Human`+`Alive`+`Position`) в ЛОКАЦИИ вещания сообщения ИЛИ
+   в СОСЕДНЕЙ (граф MAP, `neighbors(loc)`), КРОМЕ говорящего. `queryEntities` сорт. по eid ⇒
+   детерминированный порядок (№8). Радиус «своя + соседние» + вещание пересказа ИЗ ЛОКАЦИИ
+   РЕТРАНСЛЯТОРА даёт слуху ГЕОГРАФИЮ — молва ползёт по карте, а не телепортируется.
+4) ПАМЯТЬ СЛУХА (замыкает D-058): каждый слышащий — `addMemory(hearer, {kind:'rumor', subject:
+   главный субъект (`params.subject` числом → entitySubject, иначе `subjects[0]`), isFirsthand:
+   FALSE, salience: `BASE_RUMOR_SALIENCE × trust`, tick, causeEvent: id услышанного сообщения})`.
+   Через ЧИСТЫЙ хелпер memory.ts (2.15, D-035/D-038) — логику не дублируем.
+5) ДОВЕРИЕ (`trust ∈ [0..1]`, формула в balance/narrative, закон №7): `signal =
+   clamp[−1..1](getRelation(hearer→speaker) + RUMOR_FACTION_TRUST_WEIGHT × factionReputation)`
+   (оба из 2.15); `trust = clamp01(RUMOR_TRUST_BASE + RUMOR_TRUST_SPREAD × signal)`. МОНОТОННО по
+   отношению: ВРАГ < НЕЗНАКОМЕЦ(база 0.5) < ДРУГ. Реализует «доверие к источнику» (§8.2). NB:
+   выбрана монотонная модель (враг < аноним < друг), согласованная с первичным тезисом задания
+   «доверяешь источнику → выше salience»; шорткат ТЗ «враг<друг<аноним» уточнён (аноним = сигнал
+   0 = середина). Детерминировано, БЕЗ rng (закон №2).
+6) РЕТРАНСЛЯЦИЯ + ИСКАЖЕНИЕ (§8.2, ключевой риск D-073): слышащий с `talkativeness >=
+   RUMOR_RELAY_TALKATIVENESS` (D-071 — гейт `hasComponent(Personality)`) и `hop < RUMOR_MAX_HOP`
+   эмитит `radio/relayed {speakerEid: relayer, sourceMessageId, hop: prevHop+1, …}`, `causedBy =
+   sourceMessageId` (цепочка causedBy ведёт назад через все хопы к первичному radio/message,
+   D-030). ВСЁ искажение — ЧИСТАЯ `fnv(sourceMessageId, relayerEid, hop)` (как выбор шаблона Radio
+   D-070, НЕ mutable rng-поток): resume-safe и ПОРЯДКО-НЕЗАВИСИМО. Дрейфует: (а) `templateId`
+   перекрашивается в ТОН РЕТРАНСЛЯТОРА (`temperamentCode`) с fnv-индексом — пересказ его словами;
+   (б) `count` раздувается МОНОТОННО (`>= RUMOR_COUNT_MIN_GROWTH` + fnv-разброс), КОМПАУНДОМ вдоль
+   цепочки: «двое»→«отряд»→«банда»; (в) `params.speaker`→ретранслятор. «кто»/«где»
+   (`subject`/`loc`) СТАБИЛЬНЫ (искажается масштаб и слова, не факт). `hop` клампится RUMOR_MAX_HOP
+   (слух конечен).
+7) ЛАГ ≥1 ТИК (P4 «запаздывающая картина»): пересказ эмитится на тике T и попадает в окно
+   СЛЕДУЮЩЕГО прогона (T+CADENCE) ⇒ хоп за хопом с каденцией; в ТОМ ЖЕ окне свой пересказ не
+   перечитывается (окно не включает текущий тик) — петли нет, hop гарантирует обрыв.
+8) КОНСТАНТЫ (balance/narrative, закон №7): `RUMOR_CADENCE=10`, `BASE_RUMOR_SALIENCE=0.5` (вдвое
+   слабее личного `MEMORY_INITIAL_SALIENCE=1`), `RUMOR_TRUST_BASE=0.5`, `RUMOR_TRUST_SPREAD=0.4`
+   (доверие ∈ [0.1..0.9]), `RUMOR_FACTION_TRUST_WEIGHT=0.5`, `RUMOR_RELAY_TALKATIVENESS=0.6`,
+   `RUMOR_MAX_HOP=3`, `RUMOR_COUNT_MIN_GROWTH=1`, `RUMOR_COUNT_GROWTH_SPREAD=2` (прирост count ∈
+   {1,2} за хоп, строго вверх).
+
+ИЗОЛЯЦИЯ/ГОЛДЕНЫ: Rumors экспортируется как System, но в конвейер (registerPhase*Systems) в 3.6
+НЕ подключается — вместе с Chronicle 3.2 / Radio 3.5 её включат на 3.7 (батч сдвига голденов). На
+текущем прогоне не гоняется ⇒ ГОЛДЕНЫ Фазы 3 НЕ двигаются (sim:100days fd0bec10 — подтверждено
+прогоном; пустой мир 481914ae цел — тест). EconomyInvariant не затронут (`radio/relayed` массу/
+деньги не творит, закон №3; `addMemory` двигает ключ 'memory' — дизъюнктный money/inventory).
+Детерминизм 2× и resume≡continuous: искажение — чистая fnv стабильных id, состояния система не
+держит (память round-trip'ится через ResourceStore).
+Затрагивает: shared/events.ts (radio/relayed), sim/systems/rumors.ts (новый), sim/balance/
+narrative.ts (RUMOR_* константы), sim/index.ts (экспорт Rumors + констант), sim/systems/
+rumors.test.ts (новый), docs/diagrams/rumors-3.6.md.

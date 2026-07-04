@@ -618,4 +618,45 @@ export type SimEvent =
         readonly params: RadioMessageParams;
         readonly isFirsthand: boolean;
       };
+    })
+  | (SimEventBase & {
+      type: 'radio/relayed';
+      /**
+       * РЕТРАНСЛИРОВАННЫЙ СЛУХ (задача 3.6, система Rumors, D-073) — услышанное сообщение
+       * (`radio/message` ИЛИ другой `radio/relayed`), которое БОЛТЛИВЫЙ слушатель пересказал
+       * в эфир от СЕБЯ, с ИСКАЖЕНИЕМ. Слух — УТВЕРЖДЕНИЕ о мире, а НЕ факт (GDD §8.2): его
+       * `isFirsthand` всегда `false` (пересказ с чужих слов, не личное наблюдение). Как и
+       * `radio/message`, НЕ хранит готовую строку (закон №5) — несёт `templateId + params`,
+       * plain-строку (уже искажённую) собирает `renderMessage` (3.4/D-069) на чтении.
+       *  - `speakerEid` — РЕТРАНСЛЯТОР (живой Human-слушатель, пересказавший слух); он же
+       *    источник для СЛЕДУЮЩЕГО хопа. Транслирует из СВОЕЙ локации — `loc` ниже.
+       *  - `subjects` — участники ИСХОДНОГО события (перенесены из источника без изменений:
+       *    искажается масштаб/слова, но не «о ком» слух), сорт.+уникальны (закон №8).
+       *  - `loc` — локация РЕТРАНСЛЯТОРА (точка вещания), по ней ищутся слышащие следующего
+       *    хопа. Отличается от `params.loc` (места исходного события — часть самой истории).
+       *  - `sourceMessageId` — id НЕПОСРЕДСТВЕННОГО источника (сообщения, которое пересказали).
+       *    Цепочка `sourceMessageId`/`causedBy` ведёт назад через все хопы к первичному
+       *    `radio/message` (D-030) — read-time раскрутка причин (§10.1) проследит всю сплетню.
+       *  - `hop` — номер пересказа (1 у первого слуха от `radio/message`, растёт на 1 за хоп,
+       *    зажат `RUMOR_MAX_HOP` — слух не бесконечен). Монотонный драйвер искажения.
+       *  - `templateId` = `"<eventType>|<temperament>|<index>"`: `temperament` — тон
+       *    РЕТРАНСЛЯТОРА (пересказ его словами, D-071); `index` — искажение (см. ниже).
+       *  - `params` — ИСКАЖЁННЫЕ значения подстановки: `speaker`=ретранслятор, а масштаб
+       *    (`count`) раздут монотонно с хопом («двое»→«отряд»→«банда», §8.2); «кто»/«где»
+       *    (`subject`/`loc`) стабильны. `isFirsthand=false`.
+       * ИСКАЖЕНИЕ ДЕТЕРМИНИРОВАНО ЧИСТОЙ `fnv(sourceMessageId, relayerEid, hop)` (D-073, как
+       * выбор шаблона Radio D-070): БЕЗ mutable rng-потока — resume-safe и порядко-независимо.
+       * `causedBy = sourceMessageId` (услышанное → его пересказ, закон №6/D-030). Слух НЕ творит
+       * массу/деньги (закон №3) — нарративное событие, EconomyInvariant его не видит.
+       */
+      payload: {
+        readonly speakerEid: EntityId;
+        readonly subjects: readonly Subject[];
+        readonly loc?: LocationId;
+        readonly sourceMessageId: EventId;
+        readonly hop: number;
+        readonly templateId: string;
+        readonly params: RadioMessageParams;
+        readonly isFirsthand: false;
+      };
     });
