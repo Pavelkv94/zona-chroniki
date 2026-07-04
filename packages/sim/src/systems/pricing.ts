@@ -39,6 +39,7 @@ import {
   PRICE_MULT_MIN,
   PRICE_MULT_MAX,
   PRICE_FLOOR,
+  EXPORT_PRICE_FACTOR,
 } from '../balance/economy';
 
 /** Значение, зажатое в отрезок [min, max]. */
@@ -61,5 +62,20 @@ export function priceOf(item: ItemId, stock: number, targetStock: number): numbe
   const stockRatio = targetStock > 0 ? stock / targetStock : 0;
   const mult = clamp(1 + PRICE_ELASTICITY * (1 - stockRatio), PRICE_MULT_MIN, PRICE_MULT_MAX);
   const price = Math.round(base * mult);
+  return price < PRICE_FLOOR ? PRICE_FLOOR : price;
+}
+
+/**
+ * ЭКСПОРТНАЯ цена ЕДИНИЦЫ товара `item` за Периметром (задача 2.7, D-055). В отличие
+ * от `priceOf`, НЕ зависит от локального склада: за Периметром — ВНЕШНИЙ рынок без
+ * «дефицита» симулируемого мира, поэтому цена = `round(basePrice × EXPORT_PRICE_FACTOR)`
+ * (не ниже `PRICE_FLOOR`). Чистая, детерминированная (закон №2: функция контент-якоря
+ * basePrice и balance-множителя, БЕЗ rng/состояния), resume-safe (цена не хранится).
+ * `EXPORT_PRICE_FACTOR` — регулятор money-faucet (balance/economy, закон №7): именно
+ * он задаёт, сколько денег ВХОДИТ в экономику за единицу вывезенного хабара.
+ */
+export function exportPriceOf(item: ItemId): number {
+  const base = getItem(item).basePrice;
+  const price = Math.round(base * EXPORT_PRICE_FACTOR);
   return price < PRICE_FLOOR ? PRICE_FLOOR : price;
 }

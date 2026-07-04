@@ -97,7 +97,13 @@ export { assignJobs } from './systems/job-assign';
 // DERIVED (priceOf). НЕ входит в registerPhase1Systems (подключит 2.16) — экспорт как
 // System (прогон в отдельном планировщике) + чистая priceOf для тестов/анализа.
 export { Trade } from './systems/trade';
-export { priceOf } from './systems/pricing';
+export { priceOf, exportPriceOf } from './systems/pricing';
+
+// Система Export (2.7, D-055): экспорт хабара за Периметр — ЕДИНСТВЕННЫЙ money-faucet
+// замкнутой экономики (леджер item/exported: товар −, деньги +). НЕ входит в
+// registerPhase1Systems/worldgen (подключит 2.16) — экспорт как System для прогона в
+// отдельном планировщике (headless-инвариант 2.7) и будущей интеграции.
+export { Export } from './systems/export';
 
 // Система ArtifactSpawn (2.9, D-054): аномальные поля рождают артефакты по накоплению
 // заряда (наземный лут поля, леджер item/harvested). НЕ входит в registerPhase1Systems
