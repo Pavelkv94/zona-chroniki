@@ -19,7 +19,14 @@ export type {
 
 export type { SystemSchedule, SystemName } from './schedule';
 
-export type { SimEvent, SimEventBase, NeedKind, NeedLevel } from './events';
+export type {
+  SimEvent,
+  SimEventBase,
+  NeedKind,
+  NeedLevel,
+  ItemConsumeReason,
+  ItemHarvestSource,
+} from './events';
 
 export type { Contact } from './contacts';
 

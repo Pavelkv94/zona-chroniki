@@ -37,15 +37,19 @@
  * снимет Death (1.11), взяв причину из этого поля. Encounters сам НЕ удаляет и НЕ
  * помечает Corpse — только `hp<=0` + `lethalCause`.
  *
- * ── ПРИМЕНЕНИЕ ИСХОДА (закон №3) ─────────────────────────────────────────────
+ * ── ПРИМЕНЕНИЕ ИСХОДА (закон №3) + ЛЕДЖЕР МАССЫ (D-045) ───────────────────────
  *  • Патроны: у каждого стрелка инвентарь уменьшается на `ammoSpent` — НОВЫЙ массив
  *    через `resources.set` (не in-place), списываются патроны совместимого калибра.
+ *    Каждый ФАКТИЧЕСКИ израсходованный ammo-предмет публикует `item/consumed`
+ *    (reason:'combat', `causedBy`=id `encounter/resolved`) — уничтожение массы
+ *    видимо EconomyInvariant.
  *  • Здоровье: выжившим пишем `Health.hp` из итогового `Combatant.health`.
  *  • Убитые: `hp<=0` + `stampCause(lethalCause)`; НЕ удаляем (Death 1.11).
  *  • Мясо: за каждое убитое ЖИВОТНОЕ из `loot` победитель-охотник (side победы,
- *    мин eid) получает `meatYield` мяса в инвентарь (источник — ТУША, закон №3).
- *    Только при `disposition==='sideWon'` с живым человеком-победителем; без победы
- *    мяса нет (труп останется Death 1.11).
+ *    мин eid) получает `meatYield` мяса в инвентарь (источник — ТУША, закон №3) и
+ *    публикует `item/harvested` (source:'carcass', `causedBy`=id `encounter/resolved`)
+ *    — создание массы видимо EconomyInvariant. Только при `disposition==='sideWon'`
+ *    с живым человеком-победителем; без победы мяса нет (труп останется Death 1.11).
  *
  * ── ДЕТЕРМИНИЗМ / RESUME (законы №8, P0) ──────────────────────────────────────
  * Локации/животные/охотники обходятся по возрастанию (сорт. ключи). rng — ТОЛЬКО
@@ -128,14 +132,17 @@ function shooterProfile(inv: readonly InventoryEntry[] | undefined): {
  * Списывает `spent` патронов совместимого с оружием калибра из инвентаря стрелка —
  * НОВЫЙ массив (не in-place, закон №3: сумма патронов уменьшается ровно на spent).
  * Списывает с ammo-записей того же калибра, что и первое оружие, по порядку;
- * опустевшие записи выпадают (сортировка по item сохраняется).
+ * опустевшие записи выпадают (сортировка по item сохраняется). Возвращает пары
+ * `[itemId, кол-во]` ФАКТИЧЕСКИ списанных патронов (сорт. по порядку инвентаря =
+ * по item) — вызывающий публикует по ним леджер `item/consumed` (D-045). Пустой
+ * массив — если списывать нечего (spent<=0 или нет патронов калибра).
  */
 function spendAmmo(
   resources: SystemCtx['world']['resources'],
   eid: EntityId,
   inv: readonly InventoryEntry[],
   spent: number,
-): void {
+): ReadonlyArray<readonly [string, number]> {
   // Калибр оружия (как в shooterProfile).
   let caliber: string | undefined;
   for (const e of inv) {
@@ -148,11 +155,13 @@ function spendAmmo(
   }
   let remaining = spent;
   const next: InventoryEntry[] = [];
+  const consumed: Array<readonly [string, number]> = [];
   for (const e of inv) {
     const item = getItem(e.item);
     if (remaining > 0 && item.kind === 'ammo' && item.caliber === caliber && e.qty > 0) {
       const take = Math.min(remaining, e.qty);
       remaining -= take;
+      consumed.push([e.item, take]);
       const left = e.qty - take;
       if (left > 0) next.push({ item: e.item, qty: left });
       // left===0 ⇒ запись выпадает (патроны исчерпаны).
@@ -161,6 +170,7 @@ function spendAmmo(
     }
   }
   resources.set<readonly InventoryEntry[]>(INVENTORY_KEY, eid, next);
+  return consumed;
 }
 
 /**
@@ -357,10 +367,22 @@ export const Encounters: System = {
       });
 
       // ── ПРИМЕНЕНИЕ ИСХОДА ──────────────────────────────────────────────────
-      // Патроны: физически списываем у стрелков (закон №3).
+      // Патроны: физически списываем у стрелков (закон №3). ЛЕДЖЕР (D-045):
+      // каждый ФАКТИЧЕСКИ израсходованный ammo-предмет — item/consumed(reason:
+      // 'combat'), причина = id encounter/resolved (расход есть следствие боя).
+      // Обход outcome.ammoSpent — по возрастанию eid (резолвер сортирует).
       for (const [eid, spent] of outcome.ammoSpent) {
         const inv = humanInv.get(eid);
-        if (inv !== undefined && spent > 0) spendAmmo(world.resources, eid, inv, spent);
+        if (inv !== undefined && spent > 0) {
+          const consumed = spendAmmo(world.resources, eid, inv, spent);
+          for (const [item, qty] of consumed) {
+            bus.publish({
+              type: 'item/consumed',
+              causedBy: resolvedId,
+              payload: { who: eid, item, qty, reason: 'combat' },
+            });
+          }
+        }
       }
 
       // Здоровье: всем бойцам пишем итог из резолвера (survivors — живые hp;
@@ -392,6 +414,14 @@ export const Encounters: System = {
             if (hasComponent(ecs, Animal, l.from)) {
               const sp = getSpecies(ANIM.species[l.from] as number);
               addMeat(world.resources, winner, sp.meatYield);
+              // ЛЕДЖЕР (D-045, закон №3): мясо ФИЗИЧЕСКИ возникло из туши — новая
+              // масса в мире, видимая EconomyInvariant. item/harvested(source:
+              // 'carcass'), причина = id encounter/resolved (добыча = следствие боя).
+              bus.publish({
+                type: 'item/harvested',
+                causedBy: resolvedId,
+                payload: { who: winner, item: MEAT_ITEM, qty: sp.meatYield, source: 'carcass' },
+              });
             }
           }
         }

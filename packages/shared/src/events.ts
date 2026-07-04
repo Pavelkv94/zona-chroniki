@@ -33,6 +33,14 @@
  * (система Animals) добавляет `animal/born` (стадо принесло приплод по ПРИЧИННЫМ
  * порогам состояния мира — не «X% приплод»); `causedBy: null` — экологический порог
  * есть корень причинной цепочки (закон №2), как физиология Needs и генерация Weather.
+ * Задача 2.0 (Фаза 2, EconomyInvariant, D-045) добавляет ПЯТЬ ЛЕДЖЕР-событий массы
+ * (`item/produced`, `item/consumed`, `item/harvested`, `item/broughtIn`,
+ * `item/exported`) — единственный легальный способ ИЗМЕНИТЬ суммарную массу
+ * (Σ money + Σ inventory) замкнутой экономики (закон №3). Их дельта сверяется
+ * read-only чекером EconomyInvariant (`@zona/headless`) с фактическим изменением
+ * тоталов мира. Переводы (торговля/грабёж) массу СОХРАНЯЮТ и события не требуют.
+ * В Фазе 2.0 РЕАЛЬНО эмитятся только `item/consumed` (расход еды/патронов) и
+ * `item/harvested` (мясо с туши) — ретрофит дыр Фазы 1; остальные три — заготовки.
  *
  * Пример:
  * ```ts
@@ -56,6 +64,22 @@ import type { EntityId, EventId, ItemId, LocationId, Tick } from './ids';
  * контракта события.
  */
 export type NeedKind = 'hunger' | 'thirst' | 'fatigue' | 'fear';
+
+/**
+ * Причина расхода предмета в `item/consumed` (задача 2.0, D-045). Именованный
+ * union (а не сырая строка) держит леджер читаемым и типобезопасным. Фаза 1
+ * эмитит `'eat'` (TaskEffects съел еду) и `'combat'` (Encounters потратил патроны);
+ * будущие фазы расширят union (порча/крафт-сырьё/строительство) — форма замёрзла,
+ * значения добавляются.
+ */
+export type ItemConsumeReason = 'eat' | 'combat';
+
+/**
+ * Источник добытого предмета в `item/harvested` (задача 2.0, D-045). Фаза 1 —
+ * `'carcass'` (мясо с туши убитого животного, Encounters). Будущие фазы: сбор
+ * артефактов с аномального поля, свежевание трупа и т.п.
+ */
+export type ItemHarvestSource = 'carcass';
 
 /**
  * Уровень серьёзности пересечённого порога нужды. Пока единственный —
@@ -207,6 +231,95 @@ export type SimEvent =
        * генерация среды Weather), а не следствие другого события.
        */
       payload: { readonly eid: EntityId; readonly herd: number; readonly loc: LocationId };
+    })
+  | (SimEventBase & {
+      type: 'item/produced';
+      /**
+       * ЛЕДЖЕР-событие массы (задача 2.0, B5, D-045). Поселение `settlement`
+       * ПРОИЗВЕЛО `qty` единиц предмета `item` из сырья (заготовка на 2.2:
+       * мастерская превращает сырьё в товар). Это ЭНДОГЕННЫЙ КОРЕНЬ появления
+       * массы в мире (закон №3: предмет не из воздуха — он выработан), поэтому
+       * `causedBy: null` (как физиология Needs и генерация Weather). EconomyInvariant
+       * (headless) засчитывает `qty` в СОЗДАННУЮ массу интервала. В Фазе 2.0
+       * реально НЕ эмитится (нет производства) — тип добавлен, чтобы форма леджера
+       * замёрзла до появления первого источника массы. `settlement` — eid поселения
+       * (D-046: поселение — сущность со складом под ключом 'inventory').
+       */
+      payload: { readonly settlement: EntityId; readonly item: ItemId; readonly qty: number };
+    })
+  | (SimEventBase & {
+      type: 'item/consumed';
+      /**
+       * ЛЕДЖЕР-событие массы (задача 2.0, B5, D-045). Сущность `who` УНИЧТОЖИЛА
+       * (израсходовала) `qty` единиц предмета `item` по причине `reason` (закон №3:
+       * предмет ФИЗИЧЕСКИ ушёл из инвентаря, не «испарился»). EconomyInvariant
+       * засчитывает `qty` в УНИЧТОЖЕННУЮ массу. Фаза 1 (ретрофит 2.0): TaskEffects
+       * при EAT эмитит `reason:'eat'` (`causedBy` = `Task.causeEvent`, штамп
+       * `task/selected`, D-030); Encounters при расходе патронов — `reason:'combat'`
+       * (`causedBy` = id `encounter/resolved`). Расход есть СЛЕДСТВИЕ задачи/боя, а
+       * не корень, поэтому `causedBy` не null (кроме случаев без штампа причины).
+       */
+      payload: {
+        readonly who: EntityId;
+        readonly item: ItemId;
+        readonly qty: number;
+        readonly reason: ItemConsumeReason;
+      };
+    })
+  | (SimEventBase & {
+      type: 'item/harvested';
+      /**
+       * ЛЕДЖЕР-событие массы (задача 2.0, B5, D-045). Сущность `who` ДОБЫЛА `qty`
+       * единиц предмета `item` из источника `source` (закон №3: масса возникла из
+       * ФИЗИЧЕСКОГО источника — туши/поля, не из воздуха). EconomyInvariant
+       * засчитывает `qty` в СОЗДАННУЮ массу. Фаза 1 (ретрофит 2.0): Encounters при
+       * разделке победитель получает `item:'meat', source:'carcass'` (`causedBy` =
+       * id `encounter/resolved` — добыча есть следствие исхода боя). Будущие фазы:
+       * сбор артефактов с аномального поля (`causedBy` — событие поля) или иной
+       * добывающий труд (`causedBy` = `Task.causeEvent`), либо `null`.
+       */
+      payload: {
+        readonly who: EntityId;
+        readonly item: ItemId;
+        readonly qty: number;
+        readonly source: ItemHarvestSource;
+      };
+    })
+  | (SimEventBase & {
+      type: 'item/broughtIn';
+      /**
+       * ЛЕДЖЕР-событие массы (задача 2.0, B5, D-045). Сущность `who` ВНЕСЛА в мир
+       * из-за Периметра `items` (пары `[itemId, qty]`, сорт. по itemId) и `money`
+       * денег — приток извне замкнутой экономики (закон №3: физический ввоз, не
+       * эмиссия). EconomyInvariant засчитывает `items`/`money` в СОЗДАННУЮ массу.
+       * Заготовка на 2.7/2.14 (прибытие нового населения/колонны из-за Периметра);
+       * `causedBy` → `population/arrived` (будущий тип) либо `null`. В Фазе 2.0
+       * реально НЕ эмитится (стартовый инвентарь worldgen — БАЗЛАЙН, а не событие,
+       * D-045); тип добавлен для заморозки формы. NB: worldgen НЕ эмитит это событие.
+       */
+      payload: {
+        readonly who: EntityId;
+        readonly items: ReadonlyArray<readonly [ItemId, number]>;
+        readonly money: number;
+      };
+    })
+  | (SimEventBase & {
+      type: 'item/exported';
+      /**
+       * ЛЕДЖЕР-событие массы (задача 2.0, B5, D-045). Сущность `who` ВЫВЕЗЛА за
+       * Периметр `qty` единиц `item`, получив `moneyIn` денег взамен — отток товара
+       * из замкнутой экономики и ПРИТОК денег (закон №3). EconomyInvariant
+       * засчитывает `qty` в УНИЧТОЖЕННУЮ массу товара, а `moneyIn` — в СОЗДАННУЮ
+       * массу денег. Заготовка на 2.14 (экспортная колонна за Периметр); `causedBy`
+       * → событие сделки/прибытия колонны, либо `null` (эндогенный отток). В Фазе
+       * 2.0 реально НЕ эмитится — тип добавлен для заморозки формы леджера.
+       */
+      payload: {
+        readonly who: EntityId;
+        readonly item: ItemId;
+        readonly qty: number;
+        readonly moneyIn: number;
+      };
     })
   | (SimEventBase & {
       type: 'entity/died';

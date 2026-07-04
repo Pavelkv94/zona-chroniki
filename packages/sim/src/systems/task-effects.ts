@@ -14,7 +14,8 @@
  * (ResourceStore 'inventory'), СТАТИКУ локации из data (water/forage). Пишет
  * Needs (уменьшает нужды) и инвентарь (расход еды). Другие системы не зовёт —
  * результат виден им через компоненты/ресурсы (Needs — TaskSelection'у, инвентарь —
- * экономике). Событий НЕ публикует (см. ниже «Почему без событий»).
+ * экономике). Публикует РОВНО одно событие — леджер `item/consumed` при EAT
+ * (D-045, см. ниже «События: только леджер расхода еды»).
  *
  * ── Условие исполнения: сущность СТОИТ у цели (D-019) ────────────────────────
  * Эффект применяется ТОЛЬКО когда `Position.dest === Position.loc` (сущность на
@@ -45,13 +46,16 @@
  *  • HUNT  → БЕЗ восстановления здесь: мясо даёт Encounter (1.10) через труп/разделку.
  *  • FLEE  → БЕЗ восстановления: это только движение (Movement).
  *
- * ── Почему БЕЗ событий ───────────────────────────────────────────────────────
- * TaskEffects никого не уведомляет: расход инвентаря и изменение Needs — сами по
- * себе состояние, которое нисходящие системы читают через компоненты/ресурсы
- * (закон №6 не требует события там, где нет адресата-подписчика). Летопись «поел/
- * попил» — надстройка нарратива (Фаза 3+), не нужная для замыкания цикла 1.8e;
- * добавление события потребовало бы члена union в @zona/shared и штампа causedBy
- * без потребителя. Поэтому — минимально, без событий.
+ * ── События: ТОЛЬКО ЛЕДЖЕР расхода еды (D-045, ретрофит 2.0) ──────────────────
+ * Изменение Needs и восстановление из СРЕДЫ (DRINK/FORAGE/SLEEP/REST) события НЕ
+ * порождают: это состояние, которое нисходящие системы читают через компоненты
+ * (закон №6 не требует события без адресата-подписчика). НО расход ЕДЫ при EAT
+ * ФИЗИЧЕСКИ уничтожает предмет (уменьшает Σ inventory мира) — а любое изменение
+ * массы замкнутой экономики обязано быть видимо леджеру (закон №3, D-045). Поэтому
+ * EAT публикует `item/consumed {who, item, qty:1, reason:'eat'}` с `causedBy =
+ * Task.causeEvent` (задача, приведшая к еде; штамп D-030, или null). Механику
+ * расхода это НЕ меняет — только делает её видимой EconomyInvariant. Прочие эффекты
+ * массу не трогают (вода/корм — из среды, не предмет) ⇒ остаются без событий.
  *
  * ── Детерминизм (закон №8) ────────────────────────────────────────────────────
  * rng НЕ используется: восстановление чисто арифметическое (закон №2 — случайность
@@ -61,7 +65,7 @@
  * инвентарь (ResourceStore) сериализуются ⇒ resume после load продолжает тождественно.
  */
 
-import type { EntityId } from '@zona/shared';
+import type { EntityId, EventId } from '@zona/shared';
 import type { System, SystemCtx } from '../core/system';
 import { queryEntities, hasComponent } from '../core/ecs';
 import { Position, Needs, Task, Home, Human, Alive, TaskKind } from '../core/components';
@@ -93,11 +97,16 @@ const NEED = Needs as unknown as {
   fear: Float32Array;
 };
 const HOME = Home as unknown as { readonly loc: Uint32Array };
-const TSK = Task as unknown as { readonly kind: Uint8Array };
+const TSK = Task as unknown as { readonly kind: Uint8Array; readonly causeEvent: Uint32Array };
 
 /** Значение, зажатое в отрезок [min, max]. */
 function clamp(v: number, min: number, max: number): number {
   return v < min ? min : v > max ? max : v;
+}
+
+/** ui32-поле причины (0 = «нет причины», D-031) → `EventId | null`. */
+function causeOrNull(id: number): EventId | null {
+  return id === 0 ? null : (id as EventId);
 }
 
 /**
@@ -105,16 +114,17 @@ function clamp(v: number, min: number, max: number): number {
  * при равной питательности берётся первая по отсортированному по item инвентарю —
  * строгое `>` при обходе). ФИЗИЧЕСКИ списывает единицу (qty−1; при 0 — удаляет
  * запись, сохраняя сортировку) и уменьшает hunger на nutrition съеденного (кламп 0).
- * Закон №3: суммарное число предметов уменьшается ровно на съеденное. No-op (false),
- * если съедобной еды нет. `inv` НЕ мутируется на месте — записывается НОВЫЙ массив
- * (изоляция от возможных общих ссылок; worldgen даёт свежую копию, но эффект — своя
- * ответственность).
+ * Закон №3: суммарное число предметов уменьшается ровно на съеденное. Возвращает
+ * itemId съеденного предмета (для леджер-события `item/consumed`, D-045) или
+ * `undefined` (no-op, съедобной еды нет). `inv` НЕ мутируется на месте —
+ * записывается НОВЫЙ массив (изоляция от возможных общих ссылок; worldgen даёт
+ * свежую копию, но эффект — своя ответственность).
  */
 function eatOne(
   resources: SystemCtx['world']['resources'],
   eid: EntityId,
   inv: readonly InventoryEntry[],
-): boolean {
+): string | undefined {
   // Ищем самую питательную еду; tie → первая по (уже отсортированному) массиву.
   let bestIdx = -1;
   let bestNutrition = -Infinity;
@@ -129,7 +139,7 @@ function eatOne(
       bestIdx = i;
     }
   }
-  if (bestIdx < 0) return false; // еды нет — EAT ничего не восстанавливает
+  if (bestIdx < 0) return undefined; // еды нет — EAT ничего не восстанавливает
 
   const eaten = inv[bestIdx] as InventoryEntry;
   const nutrition = getItem(eaten.item).nutrition ?? 0;
@@ -149,7 +159,7 @@ function eatOne(
   resources.set<readonly InventoryEntry[]>(INVENTORY_KEY, eid, next);
 
   NEED.hunger[eid] = clamp((NEED.hunger[eid] as number) - nutrition, 0, NEED_MAX);
-  return true;
+  return eaten.item;
 }
 
 /**
@@ -160,7 +170,7 @@ export const TaskEffects: System = {
   name: 'TaskEffects',
   schedule: { every: 1 },
   update(ctx: SystemCtx): void {
-    const { world } = ctx;
+    const { world, bus } = ctx;
     const ecs = world.ecs;
 
     for (const eid of queryEntities(ecs, [Human, Alive, Task, Needs])) {
@@ -173,7 +183,20 @@ export const TaskEffects: System = {
       switch (kind) {
         case TaskKind.EAT: {
           const inv = world.resources.get<readonly InventoryEntry[]>(INVENTORY_KEY, eid);
-          if (inv !== undefined) eatOne(world.resources, eid, inv);
+          if (inv !== undefined) {
+            const eatenItem = eatOne(world.resources, eid, inv);
+            // ЛЕДЖЕР (D-045, закон №3): съеденная единица ФИЗИЧЕСКИ ушла из мира —
+            // публикуем item/consumed, чтобы EconomyInvariant видел это уничтожение
+            // массы. Причина — задача, приведшая к еде (штамп Task.causeEvent, D-030):
+            // без штампа (0) — null. Механику расхода eatOne не меняем.
+            if (eatenItem !== undefined) {
+              bus.publish({
+                type: 'item/consumed',
+                causedBy: causeOrNull(TSK.causeEvent[eid] as number),
+                payload: { who: eid, item: eatenItem, qty: 1, reason: 'eat' },
+              });
+            }
+          }
           break;
         }
         case TaskKind.DRINK: {

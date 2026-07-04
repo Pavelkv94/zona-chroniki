@@ -19,7 +19,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import type { EntityId, LocationId, Seed, Tick } from '@zona/shared';
+import type { EntityId, LocationId, Seed, SimEvent, Tick } from '@zona/shared';
 import { createSimWorld, type SimWorld } from '../core/world';
 import { spawnEntity, addComponent, queryEntities } from '../core/ecs';
 import { Position, Needs, Health, Home, Human, Alive, Task, TaskKind } from '../core/components';
@@ -174,6 +174,75 @@ describe('EAT: еда физически расходуется, hunger пада
     const eid = placeActor(w, { loc: 0, hunger: 10, kind: TaskKind.EAT, inventory: [{ item: 'canned', qty: 1 }] });
     execOnce(w); // nutrition 45 > 10
     expect(NEED.hunger[eid]).toBe(0);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ЛЕДЖЕР МАССЫ (задача 2.0, D-045): EAT публикует item/consumed(eat)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Проекция причинного штампа задачи (для проверки causedBy леджера). */
+const TSK_CAUSE = Task as unknown as { causeEvent: Uint32Array };
+
+describe('EAT: леджер item/consumed(eat) — расход еды видим EconomyInvariant', () => {
+  it('съеденная единица публикует item/consumed{who,item,qty:1,reason:eat}', () => {
+    const w = createSimWorld(1 as Seed);
+    const eid = placeActor(w, { loc: 0, hunger: 85, kind: TaskKind.EAT, inventory: [{ item: 'canned', qty: 2 }] });
+    execOnce(w);
+
+    const consumed = w.bus.log.filter(
+      (e) => e.type === 'item/consumed',
+    ) as Extract<SimEvent, { type: 'item/consumed' }>[];
+    expect(consumed.length).toBe(1);
+    const ev = consumed[0]!;
+    expect(ev.payload.who).toBe(eid);
+    expect(ev.payload.item).toBe('canned');
+    expect(ev.payload.qty).toBe(1);
+    expect(ev.payload.reason).toBe('eat');
+    // Без штампа задачи (causeEvent=0) причина — корень (null).
+    expect(ev.causedBy).toBeNull();
+  });
+
+  it('causedBy = Task.causeEvent (задача, приведшая к еде; штамп D-030)', () => {
+    const w = createSimWorld(2 as Seed);
+    const eid = placeActor(w, { loc: 0, hunger: 85, kind: TaskKind.EAT, inventory: [{ item: 'canned', qty: 2 }] });
+    TSK_CAUSE.causeEvent[eid] = 321; // как штамп task/selected
+    execOnce(w);
+
+    const ev = w.bus.log.find((e) => e.type === 'item/consumed')!;
+    expect(ev.causedBy).toBe(321);
+  });
+
+  it('нет еды → EAT no-op ⇒ НЕТ item/consumed (масса не меняется без события)', () => {
+    const w = createSimWorld(3 as Seed);
+    placeActor(w, { loc: 0, hunger: 85, kind: TaskKind.EAT, inventory: [{ item: 'ammo_9mm', qty: 5 }] });
+    execOnce(w);
+    expect(w.bus.log.filter((e) => e.type === 'item/consumed').length).toBe(0);
+  });
+
+  it('ДВА EAT подряд → РОВНО два item/consumed (по одному на съеденную единицу, без дубля)', () => {
+    // Два акта еды = два физических изъятия ⇒ ровно два леджер-события (не одно и
+    // не три). Ловит риск двойной/пропущенной эмиссии при повторном исполнении.
+    const w = createSimWorld(4 as Seed);
+    const eid = placeActor(w, { loc: 0, hunger: 100, kind: TaskKind.EAT, inventory: [{ item: 'canned', qty: 3 }] });
+    execOnce(w); // съел 1-ю консерву
+    execOnce(w); // съел 2-ю консерву
+    const consumed = w.bus.log.filter((e) => e.type === 'item/consumed') as Extract<
+      SimEvent,
+      { type: 'item/consumed' }
+    >[];
+    expect(consumed.length).toBe(2);
+    // Каждое — про эту сущность, ровно 1 единица canned, причина 'eat'.
+    for (const ev of consumed) {
+      expect(ev.payload.who).toBe(eid);
+      expect(ev.payload.item).toBe('canned');
+      expect(ev.payload.qty).toBe(1);
+      expect(ev.payload.reason).toBe('eat');
+    }
+    // Замкнутость: суммарный расход по леджеру == реально ушедшему из инвентаря (3−1=2).
+    const ledgerSpent = consumed.reduce((s, e) => s + e.payload.qty, 0);
+    expect(ledgerSpent).toBe(2);
+    expect(totalItems(inv(w, eid))).toBe(1);
   });
 });
 

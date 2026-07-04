@@ -194,6 +194,103 @@ describe('Encounters: охота человек vs олень', () => {
   });
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ЛЕДЖЕР МАССЫ (задача 2.0, D-045): item/consumed(ammo) + item/harvested(meat)
+// ═══════════════════════════════════════════════════════════════════════════
+describe('Encounters: леджер массы (item/consumed ammo + item/harvested meat)', () => {
+  it('расход патронов публикует item/consumed(combat), причина = encounter/resolved', () => {
+    const world = createSimWorld(42 as Seed);
+    const deer = placeAnimal(world, DEER, LOC);
+    const hunter = placeHunter(world, LOC, deer, { ammo: 16 });
+
+    runEncounters(world, 1);
+
+    const log = world.bus.log;
+    const resolved = log.find((e) => e.type === 'encounter/resolved')!;
+    const consumed = log.filter(
+      (e) => e.type === 'item/consumed',
+    ) as Extract<SimEvent, { type: 'item/consumed' }>[];
+    // Патроны реально потрачены ⇒ ровно одно item/consumed по ammo_9mm стрелка.
+    expect(consumed.length).toBe(1);
+    const ev = consumed[0]!;
+    expect(ev.payload.who).toBe(hunter);
+    expect(ev.payload.item).toBe('ammo_9mm');
+    expect(ev.payload.reason).toBe('combat');
+    expect(ev.payload.qty).toBeGreaterThan(0);
+    expect(ev.causedBy).toBe(resolved.id);
+    // ЗАМКНУТОСТЬ: qty леджера == реальному расходу (16 − остаток).
+    expect(ev.payload.qty).toBe(16 - ammoQty(world, hunter));
+    // …и совпадает с ammoSpent в resolved (один источник истины).
+    const spentTotal = (
+      resolved as Extract<SimEvent, { type: 'encounter/resolved' }>
+    ).payload.ammoSpent.reduce((s, [, q]) => s + q, 0);
+    expect(ev.payload.qty).toBe(spentTotal);
+  });
+
+  it('добыча мяса публикует item/harvested(carcass), причина = encounter/resolved', () => {
+    const world = createSimWorld(42 as Seed);
+    const deer = placeAnimal(world, DEER, LOC);
+    const hunter = placeHunter(world, LOC, deer, { ammo: 16 });
+
+    runEncounters(world, 1);
+
+    const log = world.bus.log;
+    const resolved = log.find((e) => e.type === 'encounter/resolved')!;
+    const harvested = log.filter(
+      (e) => e.type === 'item/harvested',
+    ) as Extract<SimEvent, { type: 'item/harvested' }>[];
+    expect(harvested.length).toBe(1);
+    const ev = harvested[0]!;
+    expect(ev.payload.who).toBe(hunter);
+    expect(ev.payload.item).toBe('meat');
+    expect(ev.payload.source).toBe('carcass');
+    // qty леджера == реально добавленному мясу == meatYield вида.
+    expect(ev.payload.qty).toBe(getSpecies(DEER).meatYield);
+    expect(ev.payload.qty).toBe(meatQty(world, hunter));
+    expect(ev.causedBy).toBe(resolved.id);
+  });
+
+  it('охотник ПРОИГРАЛ (кабан) → мяса нет ⇒ НЕТ item/harvested (масса не растёт)', () => {
+    // Кабан (BOAR) опасен; слабый безоружный охотник гибнет — победы стороны0 нет.
+    const world = createSimWorld(42 as Seed);
+    const boar = placeAnimal(world, BOAR, LOC);
+    const hunter = placeHunter(world, LOC, boar, { shooting: 0.05, hp: 5, ammo: 0 });
+
+    runEncounters(world, 1);
+
+    const harvested = world.bus.log.filter((e) => e.type === 'item/harvested');
+    expect(harvested.length).toBe(0);
+    expect(meatQty(world, hunter)).toBe(0);
+  });
+
+  it('патроны потрачены, но зверь НЕ убит → item/consumed(ammo) ЕСТЬ, item/harvested НЕТ', () => {
+    // Раненый охотник со стволом и патронами стреляет по кабану, гибнет, кабан жив.
+    // Расход патронов реален (леджер consumed), но мяса нет (harvested отсутствует —
+    // масса создаётся ТОЛЬКО добычей туши, не самим фактом боя, закон №3).
+    const world = createSimWorld(42 as Seed);
+    const boar = placeAnimal(world, BOAR, LOC);
+    const hunter = placeHunter(world, LOC, boar, { hp: 20, ammo: 16 });
+
+    runEncounters(world, 1);
+
+    expect(HP.hp[hunter]).toBeLessThanOrEqual(0); // охотник погиб
+    expect(HP.hp[boar]).toBeGreaterThan(0); // кабан выжил (не добыт)
+
+    const consumed = world.bus.log.filter(
+      (e) => e.type === 'item/consumed',
+    ) as Extract<SimEvent, { type: 'item/consumed' }>[];
+    const harvested = world.bus.log.filter((e) => e.type === 'item/harvested');
+    // Патроны реально израсходованы ⇒ есть consumed(combat); замкнутость по инвентарю.
+    expect(consumed.length).toBe(1);
+    expect(consumed[0]!.payload.item).toBe('ammo_9mm');
+    expect(consumed[0]!.payload.reason).toBe('combat');
+    expect(consumed[0]!.payload.qty).toBe(16 - ammoQty(world, hunter));
+    // Мяса нет: без убийства туши не появляется (harvested отсутствует).
+    expect(harvested.length).toBe(0);
+    expect(meatQty(world, hunter)).toBe(0);
+  });
+});
+
 describe('Encounters: причинность started.causedBy', () => {
   it('spottedEvent из contacts → started.causedBy = spottedEvent', () => {
     const world = createSimWorld(42 as Seed);

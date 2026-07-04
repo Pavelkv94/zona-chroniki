@@ -43,6 +43,7 @@ import {
   type SimWorld,
 } from '@zona/sim';
 import { renderEventLog } from './render';
+import { worldTotals, assertEconomyInvariant, type EconTotals } from './economy-invariant';
 
 /** Режим печати лога событий (ПРЕЗЕНТАЦИЯ, D-006 — не влияет на мир/хэш). */
 export type LogMode = 'none' | 'verbose';
@@ -189,13 +190,31 @@ function buildWorld(seed: number): { world: SimWorld; scheduler: ReturnType<type
  * `metrics` тут не читается: он влияет лишь на печать в {@link main}; сам прогон
  * от него не зависит (инвариант D-006). Хроника (`logLines`) строится ПОСЛЕ хэша
  * ЧТЕНИЕМ мира — тоже вне хэша (презентация, D-006).
+ *
+ * ── ПРЕДОХРАНИТЕЛЬ EconomyInvariant (задача 2.0, D-045) ──────────────────────
+ * `baseline` = `worldTotals` сразу ПОСЛЕ worldgen (t0), ДО первого тика (стартовая
+ * масса — базлайн, не леджер). Прогон идёт ПО-ДНЕВНО (chunk = TICKS_PER_DAY): это
+ * поведенчески тождественно одному `scheduler.run(ticks)` (tickOnce не хранит
+ * межвызовного состояния), но даёт read-only проверку РАЗ В ИГРОВОЙ ДЕНЬ — так
+ * дыра в законе №3 (масса вне леджера) ловится MID-RUN, а не только в конце.
+ * Чекер вне мира/хэша (D-045/D-006): при нарушении он БРОСАЕТ (роняет процесс) и
+ * не даёт молча продолжить. `ms` покрывает весь дневной цикл прогона.
  */
 export function runHeadless(opts: CliOptions): RunResult {
   const { world, scheduler } = buildWorld(opts.seed);
-  const ticks = opts.days * TICKS_PER_DAY;
+
+  // БАЗЛАЙН массы: снимок Σ money + Σ inventory ПОСЛЕ worldgen, ДО тиков (D-045).
+  const baseline: EconTotals = worldTotals(world);
 
   const start = performance.now();
-  scheduler.run(world, ticks);
+  // Прогон по-дневно: после КАЖДОГО игрового дня сверяем массу мира с леджером
+  // (предохранитель ловит mid-run дыру). Тождественно одному run(days*TICKS_PER_DAY).
+  for (let day = 0; day < opts.days; day++) {
+    scheduler.run(world, TICKS_PER_DAY);
+    assertEconomyInvariant(world, world.bus, baseline, world.tick);
+  }
+  // Финальная сверка (покрывает days=0: тиков нет ⇒ totals == baseline, леджер пуст).
+  assertEconomyInvariant(world, world.bus, baseline, world.tick);
   const ms = performance.now() - start;
 
   const snap = serialize(world);
