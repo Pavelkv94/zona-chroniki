@@ -16,12 +16,16 @@
  * «Тиков в дне» — балансовая константа `TICKS_PER_DAY` из `@zona/sim/balance`,
  * а не магическое число 1440 в коде CLI.
  *
- * ── Фаза 1 (1.12): ЖИВОЙ МИР ─────────────────────────────────────────────────
- * Теперь CLI собирает НАСТОЯЩИЙ прогон: `createSimWorld(seed)` → `worldgen`
- * (заселение) → `registerPhase1Systems` (все 9 систем в каноническом порядке,
- * D-032) → `scheduler.run`. Лог больше НЕ пуст (`events > 0`), хэш — хэш живого
- * мира. Порядок систем — единственный источник детерминизма причинности; он
- * фиксирован в `@zona/sim/pipeline`, CLI лишь оркестрирует.
+ * ── Фаза 2 (2.16a): ПОЛНЫЙ ЖИВОЙ МИР ─────────────────────────────────────────
+ * CLI собирает НАСТОЯЩИЙ прогон: `createSimWorld(seed)` → `worldgen` (заселение)
+ * → `registerPhase2Systems` (все 17 систем в каноническом порядке, D-064,
+ * сохраняющем стыки причинности D-032) → `scheduler.run`. Лог непуст
+ * (`events > 0`), хэш — хэш живого мира Фазы 2. Порядок систем — единственный
+ * источник детерминизма причинности; он фиксирован в `@zona/sim/pipeline`, CLI
+ * лишь оркестрирует. Переход Фаза1→Фаза2 сдвинул голдены ЗАКОННО (оживают
+ * Economy/Trade/PopulationInflux): day1 seed42 165688eb→<см. cli.test>, day100
+ * sim:100days 37a19d72→<см. cli.test>. Пустой мир 481914ae цел (нет сущностей ⇒
+ * все 17 систем no-op), EconomyInvariant держится весь прогон (D-045).
  *
  * ── Флаг `--log verbose` (ПРЕЗЕНТАЦИЯ, D-006) ────────────────────────────────
  * Печатает человекочитаемую хронику по логу ПОСЛЕ прогона (render.ts). Это
@@ -35,7 +39,7 @@ import { fileURLToPath } from 'node:url';
 import {
   createSimWorld,
   createScheduler,
-  registerPhase1Systems,
+  registerPhase2Systems,
   worldgen,
   serialize,
   hashSnapshot,
@@ -171,16 +175,16 @@ export interface RunResult {
 }
 
 /**
- * Собирает ЖИВОЙ мир Фазы 1: пустой `SimWorld(seed)` → `worldgen` (заселение
- * сталкерами/животными/часами) → планировщик со всеми системами в каноническом
- * порядке (`registerPhase1Systems`, инвариант D-032). Вынесено, чтобы прогон и
+ * Собирает ЖИВОЙ мир Фазы 2: пустой `SimWorld(seed)` → `worldgen` (заселение
+ * сталкерами/животными/часами) → планировщик со всеми 17 системами в каноническом
+ * порядке (`registerPhase2Systems`, D-064, стыки D-032). Вынесено, чтобы прогон и
  * resume-тесты собирали конвейер ОДНИМ способом (порядок систем — единый).
  */
 function buildWorld(seed: number): { world: SimWorld; scheduler: ReturnType<typeof createScheduler> } {
   const world = createSimWorld(seed);
   worldgen(world); // ДО первого тика: населяем Зону (1.3)
   const scheduler = createScheduler();
-  registerPhase1Systems(scheduler); // все 9 систем, канон B.1/D-032
+  registerPhase2Systems(scheduler); // все 17 систем, канон Фазы 2 (D-064, стыки D-032)
   return { world, scheduler };
 }
 
