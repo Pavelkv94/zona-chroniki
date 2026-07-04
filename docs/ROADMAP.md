@@ -105,7 +105,7 @@ DoD (GDD 15): бандиты грабят одиночек/избегают гр
 | 2.11 | Encounters человек-vs-человек + перевод лута | Д | 2.0 | economy | ⬜ |
 | 2.12 | Решение бандита ROB (детерминированное, D-049) | Д | 2.11,2.15 | behavior | ⬜ |
 | 2.13 | Память об ограблении + обход маршрута | Д | 2.11,2.15 | behavior | ⬜ |
-| 2.14a | Рефактор spawnStalker (для притока) | приток | — | core | ⬜ |
+| 2.14a | Рефактор spawnStalker (для притока) | приток | — | core | ✅ |
 | 2.14 | PopulationInflux (причинный приток, D-051) | приток | 2.0,2.14a | economy | ⬜ |
-| 2.15 | Memory/Relations модель + MemoryDecay | Д | 2.0 | behavior | ⬜ |
+| 2.15 | Memory/Relations модель + MemoryDecay | Д | 2.0 | behavior | ✅ |
 | 2.16 | registerPhase2Systems + инвариант порядка + гейт 30 дней | сборка | все | economy/qa | ⬜ |
