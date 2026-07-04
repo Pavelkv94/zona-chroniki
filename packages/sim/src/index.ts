@@ -83,6 +83,10 @@ export { getLocation, getSpecies } from './data/index';
 export { WEATHER_TYPES } from './balance/weather';
 export type { WeatherType } from './balance/weather';
 export { TaskKind } from './core/components';
+// Личность (задача 3.3, D-071): код темперамента + маппинг в MessageTemperament
+// (D-069) для Radio (3.5) и летописи. `temperamentCode(eid)` — строковый тон
+// носителя; `Temperament`/`TEMPERAMENT_MESSAGE` — enum кодов и их отображение.
+export { Temperament, TEMPERAMENT_MESSAGE, temperamentCode } from './core/components';
 
 // Сериализация read-path для resume-прогонов CLI (save/load через весь конвейер).
 export type { SimEvent } from '@zona/shared';

@@ -35,6 +35,7 @@
  * ```
  */
 
+import type { EntityId, MessageTemperament } from '@zona/shared';
 import { defineComponentT, defineTag, Types, type ComponentRef } from './ecs';
 import type { ComponentMeta } from './registry';
 import { WEATHER_TYPES, type WeatherType } from '../balance/weather';
@@ -123,6 +124,47 @@ export type TaskKind = (typeof TaskKind)[keyof typeof TaskKind];
 export const WEATHER_CODE: Readonly<Record<WeatherType, number>> = Object.freeze(
   Object.fromEntries(WEATHER_TYPES.map((w, i) => [w, i])),
 ) as Readonly<Record<WeatherType, number>>;
+
+/**
+ * Код ТЕМПЕРАМЕНТА личности (`Personality.temperament`, хранится как ui8). Это
+ * СТРУКТУРНЫЙ код (не баланс, не контент), поэтому живёт рядом с компонентом
+ * Personality, как `TaskKind` рядом с Task. Значения ОТОБРАЖАЮТСЯ в строковые коды
+ * `MessageTemperament` (@zona/shared, D-069) через `TEMPERAMENT_MESSAGE` — тон
+ * радио-реплики (Radio 3.5 выбирает пул messages.json по темпераменту говорящего).
+ *
+ * ВНИМАНИЕ (стабильность формата + КОНТРАКТ D-069): значения — коды ui8 в снапшоте;
+ * их ПОРЯДОК ОБЯЗАН совпадать с `messages.json.temperaments`
+ * (`['neutral','panicky','veteran','talker']`) и с `MessageTemperament` — закреплено
+ * тестом. Набор APPEND-ONLY: новые темпераменты добавляются в КОНЕЦ с новым числом,
+ * `NEUTRAL=0` (базовый/фолбэк-тон, D-069) не переиспользуется/не переставляется.
+ */
+export const Temperament = {
+  /** Нейтральный — ровная фактическая речь (базовый/фолбэк-тон, D-069). */
+  NEUTRAL: 0,
+  /** Паникёр — преувеличение угрозы, крик, восклицания. */
+  PANICKY: 1,
+  /** Ветеран — скупо, спокойно, мрачный юмор, профессионально. */
+  VETERAN: 2,
+  /** Болтун — многословно, сплетни, шутки, панибратство. */
+  TALKER: 3,
+} as const;
+
+/** Тип кода темперамента (значение `Temperament.*`). */
+export type Temperament = (typeof Temperament)[keyof typeof Temperament];
+
+/**
+ * Отображение кода `Temperament` → строковый `MessageTemperament` (D-069). Индекс
+ * массива = код (0=neutral…3=talker), поэтому порядок ОБЯЗАН совпадать с enum
+ * Temperament И с `messages.json.temperaments` (тест это проверяет). Radio 3.5 берёт
+ * пул шаблонов по этому строковому коду; хелпер `temperamentCode(eid)` — обёртка над
+ * ним для носителя. Заморожен: коды стабильны (закон №8).
+ */
+export const TEMPERAMENT_MESSAGE: readonly MessageTemperament[] = Object.freeze([
+  'neutral',
+  'panicky',
+  'veteran',
+  'talker',
+]) as readonly MessageTemperament[];
 
 // Примечание про species: `Animal.species` (ui8) — это `SpeciesData.id` (плотный
 // индекс из species.json, 0=deer, 1=boar, …). ОТДЕЛЬНОГО enum здесь НЕТ намеренно:
@@ -225,6 +267,40 @@ export const WorldClock: ComponentRef = defineComponentT(
   WORLD_CAPACITY,
 );
 
+/**
+ * Личность человека (задача 3.3, D-071) — нарративная окраска NPC. Носитель —
+ * ТОЛЬКО люди (сталкеры/бандиты/резиденты/торговцы/новички; сидит `spawnStalker`,
+ * D-059). `temperament` — код `Temperament` (ui8), тон радио-реплики (Radio 3.5
+ * маппит его в `MessageTemperament` через `TEMPERAMENT_MESSAGE`/`temperamentCode`);
+ * `talkativeness` — склонность ретранслировать услышанный слух [0..1] (Rumors 3.6
+ * будет читать). Оба поля СИДЯТСЯ детерминированно в worldgen (D-021) и в тике 3.3
+ * НИКЕМ не читаются — чистые ДАННЫЕ на сущности до подключения Radio/Rumors, поэтому
+ * их появление не меняет поведение (лишь rng-сдвиг от сида; D-071). Поля в объявленном
+ * порядке: temperament, talkativeness (= порядок снапшота, закон №8).
+ */
+export const Personality: ComponentRef = defineComponentT(
+  { temperament: Types.ui8, talkativeness: Types.f32 },
+  WORLD_CAPACITY,
+);
+
+/**
+ * Хелпер для Radio (3.5) и летописи: строковый `MessageTemperament` носителя `eid`
+ * из `Personality.temperament` (D-069). Читает SoA-колонку O(1) и мягко откатывается
+ * на `'neutral'` при коде вне набора — не бросает, чтобы рендер эфира деградировал
+ * предсказуемо. ВНИМАНИЕ (находка ревью 3.3): читает колонку НАПРЯМУЮ, без
+ * `hasComponent(Personality, eid)`. Для НЕ-носителя с переиспользованным eid (бывший
+ * носитель умер → eid переиспользован не-человеком без Personality) колонка сохранит
+ * УСТАРЕВШИЙ код (SoA не зануляется при reuse без addComponent, D-024). Поэтому ВЫЗЫВАЮЩИЙ
+ * (Radio 3.5) ОБЯЗАН звать temperamentCode ТОЛЬКО на живых людях-носителях (говорящий
+ * эфира — всегда живой Human-наблюдатель ⇒ носитель); для гарантированного 'neutral' на
+ * произвольном eid — гейтить `hasComponent(Personality, eid)` на стороне вызова.
+ */
+export function temperamentCode(eid: EntityId): MessageTemperament {
+  const store = Personality as unknown as { temperament: Uint8Array };
+  const code = store.temperament[eid as number] ?? 0;
+  return TEMPERAMENT_MESSAGE[code] ?? 'neutral';
+}
+
 // ── Фаза 2: SoA data-компоненты без тега (носительство = тип, D-046) ──────────
 //
 // Settlement/AnomalyField/Job — как Animal: наличие ДАННЫХ-компонента само задаёт
@@ -313,6 +389,9 @@ export const DOMAIN_COMPONENTS: readonly ComponentMeta[] = [
   // Фаза 2 (D-046): 'job' между 'human' и 'needs'.
   { name: 'job', ref: Job, fields: ['workplace', 'employer'] },
   { name: 'needs', ref: Needs, fields: ['hunger', 'thirst', 'fatigue', 'fear'] },
+  // Задача 3.3 (D-071): 'personality' сортируется между 'needs' и 'position'
+  // ('pe…' < 'po…'). Поля в объявленном порядке.
+  { name: 'personality', ref: Personality, fields: ['temperament', 'talkativeness'] },
   { name: 'position', ref: Position, fields: ['loc', 'dest', 'etaTicks', 'moveCause'] },
   // Фаза 2 (D-046): 'settlement' между 'position' и 'skills' (se… < sk…).
   { name: 'settlement', ref: Settlement, fields: ['morale', 'security', 'buildTarget', 'buildProgress'] },

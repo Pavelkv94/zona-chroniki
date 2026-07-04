@@ -76,7 +76,7 @@ const SEEDS = [42, 7, 999] as const;
  * все 17 систем реально работают → 675e1485 → 1d52f17d. Тот же голден, что cli.test
  * day1 seed42 (единый путь сборки, D-042). Перф-фиксы шины (2.16b) результат-тождественны.
  */
-const GOLDEN_DAY1_SEED42 = '9bc823a7'; // 3.0/D-072 (P-2): гейт Perception по актёрам — не-акторные носители Position (2 поселения, 3 аном.поля) убраны из contacts ⇒ меньше perception/spotted (16358 → 10097) ⇒ сдвиг id-нумерации/штампов причинности: 74211540 → 9bc823a7 (ранее 2.16c/D-066: 1d52f17d → 74211540)
+const GOLDEN_DAY1_SEED42 = '3c54d141'; // 3.3/D-071: worldgen сидит Personality {temperament,talkativeness} каждому человеку (+2 rng/человека в конце spawnStalker); Personality в тике не читается ⇒ нового поведения нет, но rng-хвост ЗАКОННО сдвигает стартовый мир: 9bc823a7 → 3c54d141 (events 12658 → 13027). (ранее 3.0/D-072: 74211540 → 9bc823a7)
 /** Максимальный выход мяса с одной туши среди видов — верхняя граница «мясо с туш». */
 const MAX_MEAT_YIELD = Math.max(...SPECIES.map((s) => s.meatYield));
 
@@ -608,14 +608,17 @@ describe('MUST · Гейт Perception по актёрам: не-акторы (п
     expect(noise, noise.slice(0, 5).map((e) => `id=${e.id} ${JSON.stringify(e.payload)}`).join(' | ')).toEqual([]);
   });
 
-  it('счётчик perception/spotted за день-1 seed42 ЗАФИКСИРОВАН числом: 10097 (шум не-акторов убран, D-072)', () => {
+  it('счётчик perception/spotted за день-1 seed42 ЗАФИКСИРОВАН числом: 9217 (шум не-акторов убран, D-072)', () => {
     // Голден-число «замечаний» за день на том же пути, что CLI (D-072: 16358→10097
     // после P-2). Смена вверх значила бы возврат шума не-акторов ИЛИ регресс гейта;
-    // смена вниз — потерю актёр-восприятия. Держим ровно 10097 как якорь «только шум убран».
+    // смена вниз — потерю актёр-восприятия. Задача 3.3 (D-071): сид Personality сдвинул
+    // rng-поток worldgen ⇒ иной стартовый мир (позиции/нужды/встречи) ⇒ 10097 → 9217.
+    // Это НЕ регресс гейта: восприятие акторов работает, ни один spotted не про не-актора
+    // (проверено ниже) — просто иной детерминированный старт от rng-хвоста личности.
     const { world, scheduler } = buildLive(42);
     scheduler.run(world, TICKS_PER_DAY);
     const spotted = world.bus.log.filter((e) => e.type === 'perception/spotted');
-    expect(spotted).toHaveLength(10097);
+    expect(spotted).toHaveLength(9217);
     // И ни одно из них — не про декорацию (сквозная проверка на день-1).
     expect(nonActorSpotted(world, world.bus.log)).toEqual([]);
   });

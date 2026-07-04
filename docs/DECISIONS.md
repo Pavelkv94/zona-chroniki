@@ -1757,3 +1757,41 @@ DOM-зависимости; для 15-минутного чтения эфира
 Добавление messages.json само по себе не читается в тике (Radio 3.5 подключит) ⇒ ГОЛДЕНЫ Фазы 3 НЕ
 двигаются (sim:100days 0eb70da4, пустой мир 481914ae — подтверждено прогоном). EconomyInvariant не
 затронут (рендер массу/деньги не трогает).
+
+## D-071 | Фаза 3 / задача 3.3 | 2026-07-04
+Решение (SoA-компонент `Personality {temperament, talkativeness}` на людях + детерминированный сид в
+worldgen). Нарративные ДАННЫЕ на сущности для хребта Фазы 3: temperament — окраска эфира (Radio 3.5),
+talkativeness — склонность ретранслировать слух (Rumors 3.6). В тике 3.3 их НИКТО не читает.
+
+ЧТО СДЕЛАНО:
+1) КОМПОНЕНТ `Personality` (core/components.ts): SoA-поля `temperament: ui8` (код `Temperament`),
+   `talkativeness: f32 [0..1]`. Зарегистрирован в реестре (D-018) между 'needs' и 'position'
+   (сорт по имени, закон №8); сериализуется автоматически (serialize/deserialize идут по meta.fields).
+   Носитель — ТОЛЬКО люди (spawnStalker — единая точка рождения, D-059): сталкеры/торговцы/бандиты/
+   резиденты/новоприбывшие. Животные/поселения/поля Personality НЕ несут.
+2) КОД ТЕМПЕРАМЕНТА `Temperament` (enum-код, как TaskKind): 0=NEUTRAL, 1=PANICKY, 2=VETERAN, 3=TALKER.
+   Порядок = порядок `messages.json.temperaments` и `MessageTemperament` (@zona/shared, КОНТРАКТ D-069),
+   закреплён тестом. Маппинг код→строка — `TEMPERAMENT_MESSAGE: readonly MessageTemperament[]` (индекс=код).
+   APPEND-ONLY (NEUTRAL=0 — базовый/фолбэк-тон D-069, не переставляется). Хелпер `temperamentCode(eid) →
+   MessageTemperament` для Radio 3.5 (мягкий откат на 'neutral' у не-носителя). Публичная поверхность
+   @zona/sim: `Temperament`, `TEMPERAMENT_MESSAGE`, `temperamentCode`.
+3) СИД в spawnStalker (D-021/D-059) — В САМОМ КОНЦЕ потока rng (после [профессии pick]): temperament —
+   ВЗВЕШЕННЫЙ seeded-выбор из `TEMPERAMENT_WEIGHTS = [10,4,3,3]` (balance/worldgen, закон №7; ОДИН rng.int
+   по «мешку» суммарного веса — не «X% шанс», закон №2), talkativeness — seeded `rng.range(0,1)`. Ровно
+   +2 rng-вызова на человека. Порядок потребления rng spawnStalker ФИКСИРОВАН и задокументирован: нужды ×3
+   → навыки ×3 → имя (int,int,pick,pick) → [профессия pick] → temperament(int) → talkativeness(range).
+
+ИЗОЛЯЦИЯ/ПОВЕДЕНИЕ: Personality — чистые ДАННЫЕ, НИ ОДНА система конвейера их не читает в 3.3 (Radio 3.5/
+Rumors 3.6 подключат) ⇒ НОВОГО кода поведения нет. Но подпоток `world.rng.fork('worldgen')` общий и
+последовательный, поэтому +2 rng/человека ЗАКОННО сдвигают детерминированный стартовый мир (нужды/навыки/
+имена/позиции/стада downstream) — как добавление любой seeded-черты. Это НЕ изменение поведения систем.
+
+ГОЛДЕНЫ (сдвинуты ЗАКОННО, объяснимы rng-хвостом): sim:100days 0eb70da4 → fd0bec10 (events 535109 →
+532278); day1 seed42 9bc823a7 → 3c54d141 (events 12658 → 13027; согласованно cli.test ↔ phase1-gate
+GOLDEN_DAY1_SEED42); phase1-gate perception/spotted день-1 10097 → 9217. Пустой мир 481914ae ЦЕЛ (нет
+носителей ⇒ колонка personality в снапшот не пишется). EconomyInvariant держится (Personality массу/деньги
+не трогает). Детерминизм 2× и resume≡continuous — Personality сериализуется round-trip (тест).
+Затрагивает: core/components.ts (Personality/Temperament/TEMPERAMENT_MESSAGE/temperamentCode + реестр),
+balance/worldgen.ts (TEMPERAMENT_WEIGHTS/TALKATIVENESS_MIN/MAX), worldgen.ts (сид + pickTemperament),
+index.ts (экспорт), personality.test.ts (новый), cli.test.ts/phase1-gate.test.ts/components.test.ts/
+spawn-stalker.test.ts (голдены/счётчики/форма rng).

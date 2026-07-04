@@ -315,16 +315,19 @@ function tracingRng(inner: Rng): { rng: Rng; log: string[] } {
 describe('spawnStalker — форма потока rng (порядок и число вызовов, D-059 п.3)', () => {
   // Ожидаемый скелет для КОГОРТЫ (профессия pick): 6× range (3 нужды + 3 навыка),
   // затем имя = int,int,pick,pick (fi, li, шаблон клички, опция клички), затем
-  // профессия = ещё один pick. Любая вставка/перестановка rng-вызова сдвинула бы
-  // голдены Фазы 1 — тут она провалит ИМЕННО этот assert, локализуя регрессию.
+  // профессия = ещё один pick, затем ЛИЧНОСТЬ (задача 3.3, D-071 — В КОНЦЕ):
+  // temperament = int (взвешенный выбор ОДНИМ rng.int) → talkativeness = range.
+  // Любая вставка/перестановка rng-вызова сдвинула бы голдены — тут она провалит
+  // ИМЕННО этот assert, локализуя регрессию.
   const NEEDS_AND_SKILLS = ['range', 'range', 'range', 'range', 'range', 'range'];
   const NAME = ['int', 'int', 'pick', 'pick'];
+  const PERSONALITY = ['int', 'range']; // temperament (взвеш. int) → talkativeness (range)
 
-  it('kind:"pick" (когорта): range×6 → int,int,pick,pick → pick(профессия)', () => {
+  it('kind:"pick" (когорта): range×6 → int,int,pick,pick → pick(профессия) → int,range(личность)', () => {
     const world = createSimWorld(42 as Seed);
     const { rng, log } = tracingRng(world.rng.fork('spawn'));
     spawnStalker(world, rng, cohortCfg(new Set()));
-    expect(log).toEqual([...NEEDS_AND_SKILLS, ...NAME, 'pick']);
+    expect(log).toEqual([...NEEDS_AND_SKILLS, ...NAME, 'pick', ...PERSONALITY]);
   });
 
   it('kind:"fixed" (торговец): тот же поток БЕЗ финального pick профессии', () => {
@@ -335,7 +338,7 @@ describe('spawnStalker — форма потока rng (порядок и чис
       profession: { kind: 'fixed', id: 'trader' },
     });
     // Ровно на ОДИН pick короче когорты — «fixed профессию rng не выбирает».
-    expect(log).toEqual([...NEEDS_AND_SKILLS, ...NAME]);
+    expect(log).toEqual([...NEEDS_AND_SKILLS, ...NAME, ...PERSONALITY]);
     expect(log.filter((c) => c === 'pick')).toHaveLength(2); // только клички
   });
 

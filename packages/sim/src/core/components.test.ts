@@ -73,6 +73,7 @@ describe('реестр наполнен и отсортирован (D-019, за
       'human',
       'job',
       'needs',
+      'personality',
       'position',
       'settlement',
       'skills',

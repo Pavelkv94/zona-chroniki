@@ -53,8 +53,15 @@
  * STARTING_PROFESSION_IDS), а worldgen кладёт id в ResourceStore. Валидность id
  * (резолв через getFaction/getProfession) закреплена тестом связности balance↔data.
  *
- * Зависимости (что читает): balance/worldgen (числа/ссылки расстановки), balance/needs
- * (HEALTH_MAX), data (MAP, NAMES, getSpecies), core/components (SoA),
+ * ── Личность (задача 3.3, D-071) ─────────────────────────────────────────────
+ * Каждому ЧЕЛОВЕКУ (spawnStalker — единая точка рождения, D-059) сидится
+ * `Personality {temperament, talkativeness}` детерминированно (D-021): temperament —
+ * взвешенный seeded-выбор (TEMPERAMENT_WEIGHTS), talkativeness — seeded rng.range [0..1].
+ * Это ДАННЫЕ для нарратива Фазы 3 (окраска эфира Radio 3.5, ретрансляция слухов Rumors
+ * 3.6); в тике 3.3 их никто не читает.
+ *
+ * Зависимости (что читает): balance/worldgen (числа/ссылки расстановки + веса личности),
+ * balance/needs (HEALTH_MAX), data (MAP, NAMES, getSpecies), core/components (SoA),
  * core/ecs (spawn/addComponent), world.resources (холодные данные, D-007).
  *
  * Пример:
@@ -78,6 +85,7 @@ import {
   WorldClock,
   Settlement,
   AnomalyField,
+  Personality,
   Human,
   Alive,
   WEATHER_CODE,
@@ -109,6 +117,9 @@ import {
   STARTING_FATIGUE_MAX,
   SKILL_MIN,
   SKILL_MAX,
+  TEMPERAMENT_WEIGHTS,
+  TALKATIVENESS_MIN,
+  TALKATIVENESS_MAX,
   SETTLEMENT_START_MORALE,
   SETTLEMENT_START_SECURITY,
   TRADER_PROFESSION_ID,
@@ -148,6 +159,7 @@ const SETTLE = Settlement as unknown as {
   buildProgress: Float32Array;
 };
 const FIELD = AnomalyField as unknown as { charge: Float32Array; tier: Uint8Array };
+const PERSONA = Personality as unknown as { temperament: Uint8Array; talkativeness: Float32Array };
 
 /** Запись имени сталкера в ResourceStore (D-007). first/last непусты (закон №4). */
 interface NameRecord {
@@ -227,9 +239,11 @@ export interface SpawnStalkerConfig {
  *
  * Детерминизм (закон №8): чистая по отношению к переданному `world` (мутирует ECS+
  * ResourceStore, НЕ читает глобалей) и `rng` — весь недетерминизм из переданного
- * подпотока. ПОРЯДОК потребления rng ФИКСИРОВАН и совпадает с прежним инлайном
- * (нужды ×3 → навыки ×3 → имя → [профессия pick]) — иначе сдвинулись бы голдены
- * Фазы 1. Task НЕ ставится (назначит TaskSelection на первом тике, D-020 — не idle).
+ * подпотока. ПОРЯДОК потребления rng ФИКСИРОВАН: нужды ×3 → навыки ×3 → имя →
+ * [профессия pick] → темперамент → talkativeness (задача 3.3, D-071 — личность сидится
+ * В КОНЦЕ, +2 rng-вызова на человека; это ЗАКОННО сдвинуло голдены Фазы 1/3, т.к.
+ * подпоток worldgen общий и последовательный). Task НЕ ставится (назначит TaskSelection
+ * на первом тике, D-020 — не idle).
  */
 export function spawnStalker(world: SimWorld, rng: Rng, cfg: SpawnStalkerConfig): EntityId {
   const eid = spawnEntity(world.ecs);
@@ -278,7 +292,36 @@ export function spawnStalker(world: SimWorld, rng: Rng, cfg: SpawnStalkerConfig)
   // aliasing (закон №3, см. SpawnStalkerConfig.inventory).
   world.resources.set<readonly InventoryEntry[]>('inventory', eid, cfg.inventory());
 
+  // Личность (задача 3.3, D-071) — СИДИТСЯ В САМОМ КОНЦЕ потока rng spawnStalker
+  // (после [профессии pick]): ровно +2 rng-вызова на человека — temperament
+  // (взвешенный выбор, ОДИН rng.int), затем talkativeness (rng.range). Порядок
+  // ФИКСИРОВАН (закон №8). Personality несут ТОЛЬКО люди (эта единая точка рождения,
+  // D-059), и в тике 3.3 их НИКТО не читает (Radio 3.5 / Rumors 3.6 подключат) ⇒
+  // поведение НЕ меняется, добавление лишь ЗАКОННО сдвигает голдены на этот rng-хвост.
+  addComponent(world.ecs, Personality, eid); // зануляет поля (D-024)
+  PERSONA.temperament[eid] = pickTemperament(rng);
+  PERSONA.talkativeness[eid] = rng.range(TALKATIVENESS_MIN, TALKATIVENESS_MAX);
+
   return eid;
+}
+
+/**
+ * Взвешенный seeded-выбор кода `Temperament` из `TEMPERAMENT_WEIGHTS` (balance).
+ * Тратит РОВНО ОДИН rng-вызов (`rng.int` по «мешку» суммарного веса) — как `rng.pick`,
+ * но с неравными весами (закон №2: причинность/детерминизм, не «X% шанс»). Возвращает
+ * код 0..N-1 (индекс в TEMPERAMENT_WEIGHTS = код Temperament). Пустой/нулевой мешок
+ * невозможен (веса заданы в balance), поэтому цикл всегда возвращает валидный код.
+ */
+function pickTemperament(rng: Rng): number {
+  let total = 0;
+  for (const w of TEMPERAMENT_WEIGHTS) total += w;
+  let r = rng.int(0, total); // ОДИН rng-вызов на мешок [0,total)
+  for (let code = 0; code < TEMPERAMENT_WEIGHTS.length; code++) {
+    const w = TEMPERAMENT_WEIGHTS[code] as number;
+    if (r < w) return code;
+    r -= w;
+  }
+  return 0; // недостижимо: r < total ⇒ попадёт в один из сегментов
 }
 
 /**
