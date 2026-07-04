@@ -30,6 +30,8 @@ export type {
 
 export type { Contact } from './contacts';
 
+export type { Subject, MemoryRecord, RelationEntry, AvoidEntry } from './memory';
+
 export type { JsonValue, SnapshotJSON, ComponentColumnJSON } from './snapshot';
 
 export type {

@@ -1149,3 +1149,54 @@ fieldHasArtifact, sSearch + кандидат + switch-цель SEARCH, docblock)
 systems/artifact-search.ts (новая System) + systems/artifact-search.test.ts, systems/task-selection.test.ts
 (+SEARCH-тесты), index.ts (экспорт ArtifactSearch), docs/diagrams/artifact-search-2.10.md. ХВОСТ 2.16:
 подключение ArtifactSearch к pipeline + носители AnomalyField в worldgen (цикл поле→спавн→SEARCH→торговля→экспорт).
+
+## D-058 | Фаза 2 / задача 2.15 | 2026-07-04
+Решение (СУБСТРАТ памяти/отношений/обхода + MemoryDecay для цепочки бандитов 2.11–2.13; реализует D-050):
+1) ФОРМА `MemoryRecord` (@zona/shared/memory.ts, plain JSON, как Contact): `{kind:string, subject:Subject,
+   salience:number(0..1), tick:number, causeEvent:number, isFirsthand:boolean}`. `kind` — абстрактный id вида
+   памяти (`'robbed'`/`'seen'`…, закон №10, код оперирует id). `causeEvent` — EventId породившего события (D-038,
+   линковка «id в поле записи», без скана лога; 0 — причины нет). `isFirsthand` — seam для 2.x-слухов (радио):
+   `true` воспринято лично (достоверно), `false` слух (слабее, может быть ложным) — введён минимально сейчас,
+   т.к. конституция поведения требует различать первую руку; дефолт в addMemory = true. `salience` затухает.
+2) СУБЪЕКТ = единый СТРОКОВЫЙ ключ `Subject` (закон №8): сущность → `"e:<eid>"`, фракция → `"f:<factionId>"`
+   (хелперы entitySubject/factionSubject/parseSubject). Однородная строка (а не `EntityId|FactionId`) даёт
+   стабильную сортировку массивов memory/relations (как inventory сорт. по item). `':'` в id фракций запрещён
+   (валидатор данных). `relations` = `RelationEntry[]` = `[subject,value]` сорт. по subject, value∈[−1..1] (кламп);
+   нейтрал (0) НЕ хранится (пустая запись = нейтрал). `avoidLoc` = `AvoidEntry[]` = `[loc,untilTick]` сорт. по loc.
+   Все три — ResourceStore-ключи на eid NPC (`'memory'`/`'relations'`/`'avoidLoc'`, D-046/D-007, НЕ SoA); при
+   serialize пишутся АВТОМАТИЧЕСКИ (`resources.keys()` перечисляет все ключи) — регистрации нигде не требуется,
+   resume≡continuous доказан хэшем.
+3) СИСТЕМА MemoryDecay (`every:60`, изолированная, как ArtifactSpawn/Export). Затухание — ДЕТЕРМИНИРОВАННАЯ
+   функция (tick, salience/value), rng НЕ используется (закон №2, «среда сознания», как рост нужд Needs): за вызов
+   salience −= `MEMORY_SALIENCE_DECAY_PER_TICK×cadence`, модуль отношения → к 0 на `RELATION_DECAY_PER_TICK×cadence`
+   (компенсация редкого шага, «×every»). PRUNE: memory-запись уходит при `salience<MEMORY_FORGET_THRESHOLD` ИЛИ
+   возраст `>MEMORY_MAX_AGE_TICKS` (~60 дней, страховка от «вечной» памяти); relations уходит при
+   `|value|<=RELATION_NEUTRAL_EPSILON`; avoidLoc — при `untilTick<=tick`. Пустой ключ УДАЛЯЕТСЯ (не сериализуется
+   пустым массивом). Запись — НОВЫМИ массивами (D-035). Guard-канарейка при загрузке: убыль за шаг < 1.0 (иначе
+   мгновенная амнезия), как guard ArtifactSpawn. Константы — balance/social.ts (закон №7), горизонт = 60×TICKS_PER_DAY.
+4) ТИХОЕ ЗАБВЕНИЕ (событий НЕ публикуем, обосновано): затухание — ОТСУТСТВИЕ подкрепления, не происшествие в мире;
+   у него нет причины-события, а «забыл» — не факт летописи. `memory/forgotten` на каждую запись засорял бы
+   append-only лог и менял хэш на ровном месте. Prune тихий (как затухание страха в Needs, тоже без события). Seam
+   Фазы 3: narrative выведет «забыл обиду» из истории salience, а не из per-tick события отсюда.
+5) ХЕЛПЕР-API (systems/memory.ts, чистые функции для 2.12/2.13/TaskSelection, НЕ реализуют ROB-выбор здесь):
+   addMemory/getMemory, getRelation/setRelation/adjustRelation/getRelations, addAvoid/isAvoided/getAvoids,
+   factionReputation (DERIVED: среднее прямого отношения к `f:<faction>` + отношений к известным членам фракции по
+   их `'faction'` в ResourceStore — не хранится, как цена D-047). Все детерминированы, сорт., без rng.
+6) ГЛАВНЫЙ ТЕСТ (закон №1): затухание идёт по СОСТОЯНИЮ записей без игрока. НЕ в registerPhase1Systems/worldgen до
+   2.16; текущий worldgen НЕ пишет memory/relations/avoidLoc ⇒ MemoryDecay no-op на живом прогоне ⇒ голдены Фазы 1
+   НЕ сдвинуты (sim:100days 37a19d72, пустой мир 481914ae — проверено: MemoryDecay 200 тиков на пустом мире даёт
+   тот же хэш, что голое продвижение тиков; 0 событий, 0 ключей). Экспортирована как System из @zona/sim.
+Альтернативы: subject как `EntityId|FactionId` (отклонено — разнородная сортировка, закон №8; строковый префикс
+однороден); хранить фракционную репутацию отдельным числом (отклонено — DERIVED из relations, как цена D-047,
+resume-safe); публиковать memory/forgotten на prune (отклонено — засор лога/хэша, забвение не-нарративно); отдельная
+структура вне ResourceStore (отклонено — потеряли бы бесплатную сериализацию/инвариант, D-046); rng в затухании
+(отклонено — закон №2, это чистая физика времени). Проверка: typecheck exit 0; npm run test зелёный (+memory.test:
+форма/subject/relations/factionReputation/avoid; +memory-decay.test: затухание/prune-салиенс+возраст/relations→0/
+avoidLoc-чистка/тихо/no-op-голдены/resume/детерминизм). ПРИМЕЧАНИЕ по нумерации: D-059 закреплён ПАРАЛЛЕЛЬНОЙ
+задачей 2.14a (рефактор spawnStalker), 2.15 занял свободный D-058.
+Затрагивает: @zona/shared (memory.ts: Subject/MemoryRecord/RelationEntry/AvoidEntry + index.ts реэкспорт),
+balance/social.ts (новый: горизонт/пороги/ставки затухания), systems/memory.ts (хелперы) + systems/memory-decay.ts
+(System) + тесты, sim/index.ts (экспорт MemoryDecay+хелперы+типы), docs/diagrams/memory-2.15.md. ХВОСТ: 2.12
+(ROB-выбор читает getRelation/factionReputation), 2.13 (addMemory на ограбление + addAvoid → обход), 2.16
+(подключение MemoryDecay к registerPhase2Systems). ХВОСТ balance-analyst: горизонт/пороги — тюнинг по метрикам
+(как долго NPC помнит обиду, как быстро остывает вражда).

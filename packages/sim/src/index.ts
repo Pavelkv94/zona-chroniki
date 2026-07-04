@@ -117,3 +117,30 @@ export { ArtifactSpawn } from './systems/artifact-spawn';
 // AnomalyField нет до 2.16) — экспорт как System для прогона в отдельном планировщике
 // (headless-инвариант 2.10) и будущей интеграции.
 export { ArtifactSearch } from './systems/artifact-search';
+
+// Память/отношения/обход (2.15, D-050/D-058) — СУБСТРАТ цепочки бандитов (2.11–2.13).
+// Система MemoryDecay: затухание salience памяти / остывание отношений к нейтралу / чистка
+// истёкшего обхода. НЕ входит в registerPhase1Systems и не создаётся worldgen (записей
+// memory/relations/avoidLoc нет до 2.16) ⇒ no-op на живом мире, голдены Фазы 1 целы.
+// Чистые хелперы (addMemory/getRelation/adjustRelation/addAvoid/isAvoided/factionReputation
+// + кодировка subject) — API для 2.12/2.13/TaskSelection; здесь НЕ реализуют ROB-выбор.
+export { MemoryDecay } from './systems/memory-decay';
+export {
+  entitySubject,
+  factionSubject,
+  parseSubject,
+  getMemory,
+  addMemory,
+  getRelations,
+  getRelation,
+  setRelation,
+  adjustRelation,
+  factionReputation,
+  getAvoids,
+  addAvoid,
+  isAvoided,
+  MEMORY_KEY,
+  RELATIONS_KEY,
+  AVOID_KEY,
+} from './systems/memory';
+export type { Subject, MemoryRecord, RelationEntry, AvoidEntry } from '@zona/shared';
