@@ -128,7 +128,14 @@ function validateMap(data: unknown): MapData {
 
 // ── Валидация предметов ─────────────────────────────────────────────────────
 
-const VALID_ITEM_KINDS = new Set<ItemKind>(['weapon', 'ammo', 'food', 'drink', 'medical']);
+const VALID_ITEM_KINDS = new Set<ItemKind>([
+  'weapon',
+  'ammo',
+  'food',
+  'drink',
+  'medical',
+  'artifact',
+]);
 
 function validateItems(data: unknown): readonly ItemData[] {
   assert(data !== null && typeof data === 'object', 'items.json: не объект');
@@ -157,6 +164,24 @@ function validateItems(data: unknown): readonly ItemData[] {
     if (it.kind === 'drink') {
       assert(typeof it.hydration === 'number' && it.hydration > 0, `предмет "${it.id}": drink требует hydration>0`);
     }
+    if (it.kind === 'artifact') {
+      // Артефакт (2.9/D-054): обязателен `tier` — целое >=0, связывает предмет с
+      // ступенью аномального поля (AnomalyField.tier). Закон №3/№10: артефакт —
+      // контент с явной ступенью, а не безымянный «выпад».
+      assert(
+        Number.isInteger(it.tier) && (it.tier as number) >= 0,
+        `предмет "${it.id}": artifact требует целый tier>=0`,
+      );
+    }
+  });
+  // Уникальность tier среди артефактов (2.9/D-054): getArtifactForTier сопоставляет
+  // ступень поля с ОДНОЗНАЧНЫМ артефактом; дубль ступени сделал бы выбор неоднозначным.
+  const artifactTiers = new Set<number>();
+  items.forEach((it) => {
+    if (it.kind !== 'artifact') return;
+    const t = it.tier as number;
+    assert(!artifactTiers.has(t), `артефакт "${it.id}": дублирующийся tier=${t} (ступени уникальны)`);
+    artifactTiers.add(t);
   });
   return items;
 }
@@ -406,6 +431,16 @@ const EDGE_LEN = buildEdgeLenMap(MAP);
 /** id предмета → ItemData. */
 const ITEM_BY_ID: ReadonlyMap<string, ItemData> = new Map(ITEMS.map((it) => [it.id, it]));
 
+/**
+ * Артефакты (kind==='artifact'), ОТСОРТИРОВАННЫЕ по возрастанию `tier` (закон №8 —
+ * детерминированный выбор в getArtifactForTier). Ступени уникальны (validateItems).
+ * Пусто, если контент артефактов не заведён (getArtifactForTier тогда бросит —
+ * fail-fast, а не молчаливый «нет артефакта»).
+ */
+const ARTIFACTS_BY_TIER: readonly ItemData[] = ITEMS.filter((it) => it.kind === 'artifact')
+  .slice()
+  .sort((a, b) => (a.tier as number) - (b.tier as number));
+
 /** id фракции → FactionData. */
 const FACTION_BY_ID: ReadonlyMap<string, FactionData> = new Map(FACTIONS.map((f) => [f.id, f]));
 
@@ -492,6 +527,25 @@ export function getItem(id: string): ItemData {
   const it = ITEM_BY_ID.get(id);
   assert(it !== undefined, `getItem: неизвестный предмет "${id}"`);
   return it;
+}
+
+/**
+ * Артефакт для ступени аномального поля `tier` (задача 2.9, D-054, закон №10 — код
+ * оперирует id, контент-таблица в items.json). Возвращает артефакт с НАИБОЛЬШИМ
+ * `tier <= запрошенного` (поле высокой ступени даёт лучший из достижимых артефактов;
+ * ступень выше всего контента — самый ценный имеющийся). Ниже минимальной ступени —
+ * артефакт минимальной ступени (клампинг). ДЕТЕРМИНИРОВАН (обход по возрастанию tier).
+ * Бросает, если артефактов в контенте нет (fail-fast: система не должна молча родить
+ * «ничто»).
+ */
+export function getArtifactForTier(tier: number): ItemData {
+  assert(ARTIFACTS_BY_TIER.length > 0, 'getArtifactForTier: в items.json нет артефактов (kind==="artifact")');
+  let chosen = ARTIFACTS_BY_TIER[0] as ItemData;
+  for (const a of ARTIFACTS_BY_TIER) {
+    if ((a.tier as number) <= tier) chosen = a;
+    else break;
+  }
+  return chosen;
 }
 
 /** Вид по плотному id. Бросает при выходе за диапазон. */

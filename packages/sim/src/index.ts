@@ -98,3 +98,9 @@ export { assignJobs } from './systems/job-assign';
 // System (прогон в отдельном планировщике) + чистая priceOf для тестов/анализа.
 export { Trade } from './systems/trade';
 export { priceOf } from './systems/pricing';
+
+// Система ArtifactSpawn (2.9, D-054): аномальные поля рождают артефакты по накоплению
+// заряда (наземный лут поля, леджер item/harvested). НЕ входит в registerPhase1Systems
+// и не создаётся worldgen (подключит 2.16) — экспорт как System для прогона в отдельном
+// планировщике (headless-инвариант 2.9) и будущей интеграции.
+export { ArtifactSpawn } from './systems/artifact-spawn';

@@ -77,11 +77,13 @@ export type NeedKind = 'hunger' | 'thirst' | 'fatigue' | 'fear';
 export type ItemConsumeReason = 'eat' | 'combat' | 'upkeep' | 'production';
 
 /**
- * Источник добытого предмета в `item/harvested` (задача 2.0, D-045). Фаза 1 —
- * `'carcass'` (мясо с туши убитого животного, Encounters). Будущие фазы: сбор
- * артефактов с аномального поля, свежевание трупа и т.п.
+ * Источник добытого предмета в `item/harvested` (задача 2.0, D-045). `'carcass'` —
+ * мясо с туши убитого животного (Encounters, Фаза 1). `'anomaly'` — артефакт,
+ * РОЖДЁННЫЙ аномальным полем по накоплению заряда (ArtifactSpawn 2.9, D-054): масса
+ * возникает В МИРЕ (наземный лут поля) из физического источника — самого поля.
+ * APPEND-ONLY по мере новых добывающих источников.
  */
-export type ItemHarvestSource = 'carcass';
+export type ItemHarvestSource = 'carcass' | 'anomaly';
 
 /**
  * Уровень серьёзности пересечённого порога нужды. Пока единственный —
@@ -235,6 +237,31 @@ export type SimEvent =
       payload: { readonly eid: EntityId; readonly herd: number; readonly loc: LocationId };
     })
   | (SimEventBase & {
+      type: 'artifact/spawned';
+      /**
+       * Аномальное поле `field` РОДИЛО артефакт `item` (ступени `tier`) в своей
+       * локации `loc` (задача 2.9, система ArtifactSpawn, D-054). Рождение ПРИЧИННО
+       * (закон №2/№3, НЕ «X% выпадения»): заряд поля (`AnomalyField.charge`) копится
+       * ДЕТЕРМИНИРОВАННО каждый тик (физика аномалии, как физиология Needs), и при
+       * достижении порога поле «разряжается» в физический предмет — наземный лут поля
+       * (cold 'inventory' на eid поля, D-046), а заряд списывается на стоимость
+       * артефакта. `item` определён `tier` поля через данные (`getArtifactForTier`,
+       * закон №10). `causedBy: null` — накопление заряда до порога есть КОРЕНЬ причинной
+       * цепочки (как `animal/born`/`needs/threshold`); при появлении выбросов (emission,
+       * Фаза 3) сюда встанет id события выброса, спровоцировавшего разряд (seam D-054).
+       * За этим событием СРАЗУ следует ЛЕДЖЕР `item/harvested{who:field,source:'anomaly'}`
+       * (`causedBy` = id ЭТОГО события): масса артефакта видима EconomyInvariant.
+       * Подбор артефакта NPC (SEARCH, 2.10) — ПЕРЕВОД лута поля в инвентарь (масса
+       * сохраняется, леджер не нужен, как торговля D-047), НЕ повторный harvested.
+       */
+      payload: {
+        readonly field: EntityId;
+        readonly item: ItemId;
+        readonly tier: number;
+        readonly loc: LocationId;
+      };
+    })
+  | (SimEventBase & {
       type: 'item/produced';
       /**
        * ЛЕДЖЕР-событие массы (задача 2.0, B5, D-045). Поселение `settlement`
@@ -276,9 +303,10 @@ export type SimEvent =
        * ФИЗИЧЕСКОГО источника — туши/поля, не из воздуха). EconomyInvariant
        * засчитывает `qty` в СОЗДАННУЮ массу. Фаза 1 (ретрофит 2.0): Encounters при
        * разделке победитель получает `item:'meat', source:'carcass'` (`causedBy` =
-       * id `encounter/resolved` — добыча есть следствие исхода боя). Будущие фазы:
-       * сбор артефактов с аномального поля (`causedBy` — событие поля) или иной
-       * добывающий труд (`causedBy` = `Task.causeEvent`), либо `null`.
+       * id `encounter/resolved` — добыча есть следствие исхода боя). Задача 2.9
+       * (D-054): аномальное поле рождает артефакт — `who`=eid поля, `item`=артефакт,
+       * `qty`=1, `source:'anomaly'` (`causedBy` = id `artifact/spawned`). Иной
+       * добывающий труд — `causedBy` = `Task.causeEvent`, либо `null`.
        */
       payload: {
         readonly who: EntityId;

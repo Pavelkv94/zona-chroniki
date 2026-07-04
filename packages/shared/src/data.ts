@@ -60,8 +60,13 @@ export interface MapData {
   readonly edges: readonly EdgeData[];
 }
 
-/** Категория предмета. Определяет, какие опциональные поля обязательны. */
-export type ItemKind = 'weapon' | 'ammo' | 'food' | 'drink' | 'medical';
+/**
+ * Категория предмета. Определяет, какие опциональные поля обязательны. `'artifact'`
+ * (Фаза 2, задача 2.9, D-054) — хабар, РОЖДАЕМЫЙ аномальным полем по накоплению
+ * заряда (не крафт/не приток): у него обязателен `tier` (ступень поля, из которой
+ * он выпадает), а `caliber`/`nutrition`/`hydration` неприменимы.
+ */
+export type ItemKind = 'weapon' | 'ammo' | 'food' | 'drink' | 'medical' | 'artifact';
 
 /**
  * Шаблон предмета (`items.json`). Код ссылается на `id` (строка) — конкретные
@@ -88,6 +93,13 @@ export interface ItemData {
   readonly nutrition?: number;
   /** Гидратация порции (drink): сколько единиц жажды закрывает. */
   readonly hydration?: number;
+  /**
+   * Ступень артефакта (artifact, задача 2.9/D-054): целое >=0, УНИКАЛЬНОЕ среди
+   * артефактов. Связывает предмет с `AnomalyField.tier`: поле ступени `t` рождает
+   * артефакт с наибольшим `tier <= t` (`getArtifactForTier`, data-driven — код
+   * оперирует id, закон №10). Обязателен для kind==='artifact', неприменим иначе.
+   */
+  readonly tier?: number;
 }
 
 /**
