@@ -1627,6 +1627,45 @@ headless/phase2-pipeline.test.ts (ROB/Export агрегат), docs/reports/phase
 данные (settlements/species/map/items), worldgen-константы, порядок конвейера (D-064). Проверка: typecheck exit 0;
 npm run test зелёный; sim:100days `b64691c7` стабилен 2×.
 
+## D-067 | Фаза 3 / задача 3.1 | 2026-07-04
+Решение (ФУНДАМЕНТ нарративного хребта Фазы 3: оценка ЗНАЧИМОСТИ события + аккумулятор ИЗВЕСТНОСТИ `fame`).
+Проектирование sim-architect; реализовано narrative-engineer. НЕ система: чистые нарративные функции в НОВОЙ
+папке `packages/sim/src/narrative/` (аналог `systems/`, но без побочных эффектов), в конвейер НЕ входят,
+worldgen их не зовёт, `fame` в 3.1 нигде не инкрементится. Их позовут Chronicle 3.2 (порог значимости →
+запись «День N: …») и Radio 3.5 (окраска эфира), они же поднимут `fame` упомянутым сущностям каузальным шагом.
+
+1) `significance(ev, world): number` ∈ [0..1] — ЧИСТАЯ DERIVED функция (закон №2/№8): детерминирована, БЕЗ rng,
+   НЕ мутирует мир, НЕ сканирует лог (перф — иначе O(лог)/оценку = квадрат за прогон, D-006). Читает ТОЛЬКО
+   `ev` + состояние мира (`fame` участников из ResourceStore, «тип носителя цели» — NPC vs зверь по наличию
+   ключа `'name'`). Формула: `raw = base(тип) + bonus(tier/потери)`; `fameN = maxFame(участники)/FAME_CAP`;
+   `sig = clamp01(raw + (1−raw)·fameN·FAME_INFLUENCE)`. Лифт тянет значимость к 1.0, НИКОГДА не превышая её
+   (raw=1 у `settlement/abandoned` → остаётся 1.0). Веса по типу — в НОВОМ `balance/narrative.ts` (закон №7),
+   расставлены по GDD §10.2 вокруг трёх якорей: заброшенность/гибель поселения = МАКС (1.0); смерть NPC = вес
+   ИЗВЕСТНОСТИ жертвы (base 0.48, лифт по fame); редкий артефакт = СРЕДНЕ (0.30 + 0.08·tier). Прочие типы между
+   якорями: encounter/resolved 0.42 (+0.06/потеря) > started 0.30 > loot 0.28 ≈ artifact/collected 0.28;
+   population/arrived 0.22; item/exported 0.12; weather 0.10; смерть зверя 0.10; trade 0.06 (< смерти, DoD);
+   needs/corpse 0.06; born/harvested/broughtIn 0.05; produced 0.03; spotted/consumed 0.02; move/*/task/sim/*
+   и НЕИЗВЕСТНЫЙ тип → 0.0 БЕЗ throw. Покрыт ВЕСЬ словарь shared/events.ts.
+
+2) `fame` — ХРАНИМЫЙ аккумулятор (ResourceStore ключ `'fame'`, число на eid), НЕ derived-из-лога. Авто-
+   сериализуется как money/memory (D-050/D-007: generic-обход `resources.keys()` в serialize/deserialize).
+   Хелперы: `getFame(resources,eid)` (нет записи → 0); `incFame(resources,eid,delta)` — МОНОТОННЫЙ инкремент с
+   CAP (итог зажат в `[current, FAME_CAP]` ⇒ отрицательный/чрезмерный delta монотонности не ломает), пишет
+   НОВЫМ значением через `resources.set` (D-035). Decay отложен в 3b. В 3.1 `incFame` в конвейере НЕ вызывается
+   ⇒ на текущем прогоне `fame` везде 0 ⇒ significance работает на БАЗОВЫХ весах.
+
+3) ИЗОЛЯЦИЯ. `'fame'` — РЕПУТАЦИОННОЕ число, не предмет и не деньги: ключ ДИЗЪЮНКТЕН `'money'`/`'inventory'`,
+   поэтому EconomyInvariant (D-045, суммирует только money+inventory) `fame` не видит и НЕ затронут. Голдены
+   Фазы 3 НЕ двигаются (система не в конвейере, worldgen не зовёт, fame не инкрементится): sim:100days
+   `0eb70da4` и пустой мир `481914ae` подтверждены прогоном. Экспорт из `@zona/sim`: `significance`/`getFame`/
+   `incFame`/`FAME_KEY` для 3.2/3.5.
+
+Тесты: `narrative/significance.test.ts` — детерминизм, границы [0..1] на всём словаре, веса по типам
+(заброшенность=макс, смерть NPC > trade, NPC > зверя, tier↑, потери↑), масштаб по fame (жертва-легенда >
+аноним, макс участника, кламп ≤1), неизвестный тип без throw, getFame=0, incFame монотонен/CAP/новое значение,
+round-trip serialize; headless/fame-economy-invariant.test — реальный assertEconomyInvariant инвариантен к fame.
+npm run test зелёный; typecheck exit 0.
+
 ## D-072 | Фаза 3 (прекондишн) / задача 3.0 (P-2) | 2026-07-04
 Решение (гейт Perception по АКТЁРАМ — прекондишн нарратива Фазы 3; ЛОГИКА одной системы, без нового модуля,
 без изменения контрактов ядра). ПРОБЛЕМА: Perception строила бакеты видимости по ВСЕМ носителям `Position`, включая

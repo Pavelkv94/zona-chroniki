@@ -172,3 +172,12 @@ export type { SpawnStalkerConfig, ProfessionSpec } from './worldgen';
 // (headless-инвариант 2.14) и будущей интеграции. Голдены Фазы 1 не сдвигаются.
 export { PopulationInflux, computeAttractiveness } from './systems/population-influx';
 export type { Attractiveness } from './systems/population-influx';
+
+// Нарративный хребет Фазы 3 (3.1, D-067): ЧИСТАЯ оценка значимости события
+// `significance(ev, world)` ∈ [0..1] + хранимый аккумулятор известности `fame`
+// (`getFame`/`incFame`, ключ ResourceStore 'fame', автосериализуется как money/memory).
+// НЕ система (в конвейер не входит, worldgen не зовёт, fame нигде не инкрементится в 3.1)
+// ⇒ голдены Фазы 3 не двигаются; EconomyInvariant не затронут ('fame' дизъюнктен
+// 'money'/'inventory'). Позовут Chronicle 3.2 (порог значимости → запись летописи) и
+// Radio 3.5 (окраска эфира), они же поднимут fame упомянутым сущностям.
+export { significance, getFame, incFame, FAME_KEY } from './narrative/significance';
