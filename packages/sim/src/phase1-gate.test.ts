@@ -36,7 +36,7 @@ import { createScheduler, type Scheduler } from './core/scheduler';
 import { registerPhase2Systems, PHASE2_SYSTEMS } from './pipeline';
 import { serialize, deserialize, hashSnapshot } from './core/snapshot';
 import { queryEntities, hasComponent, allEntities } from './core/ecs';
-import { Human, Alive, Animal, Task, Needs, Position } from './core/components';
+import { Human, Alive, Animal, Task, Needs, Position, Settlement, AnomalyField } from './core/components';
 import { TICKS_PER_DAY } from './balance/time';
 import { edgeLen, SPECIES, getSettlements } from './data/index';
 import { STALKER_COUNT, BANDIT_COUNT, SETTLEMENT_RESIDENTS } from './balance/worldgen';
@@ -76,7 +76,7 @@ const SEEDS = [42, 7, 999] as const;
  * все 17 систем реально работают → 675e1485 → 1d52f17d. Тот же голден, что cli.test
  * day1 seed42 (единый путь сборки, D-042). Перф-фиксы шины (2.16b) результат-тождественны.
  */
-const GOLDEN_DAY1_SEED42 = '74211540'; // 2.16c/D-066: money-faucet калибровка (W.trade>W.search, EXPORT_PRICE_FACTOR 1.3) сдвинула историю с тика 0: 1d52f17d → 74211540
+const GOLDEN_DAY1_SEED42 = '9bc823a7'; // 3.0/D-072 (P-2): гейт Perception по актёрам — не-акторные носители Position (2 поселения, 3 аном.поля) убраны из contacts ⇒ меньше perception/spotted (16358 → 10097) ⇒ сдвиг id-нумерации/штампов причинности: 74211540 → 9bc823a7 (ранее 2.16c/D-066: 1d52f17d → 74211540)
 /** Максимальный выход мяса с одной туши среди видов — верхняя граница «мясо с туш». */
 const MAX_MEAT_YIELD = Math.max(...SPECIES.map((s) => s.meatYield));
 
@@ -561,7 +561,7 @@ describe('MUST · Закон №3: охота даёт мясо, ничего н
 // MUST-8 — ЦЕЛОСТНОСТЬ: живой прогон не падает и воспроизводит день-1 голден.
 // ═════════════════════════════════════════════════════════════════════════════
 describe('MUST · Целостность: конвейер не падает и держит живой голден', () => {
-  it('день-1/seed-42 через тот же путь сборки даёт голден 1d52f17d (D-065)', () => {
+  it('день-1/seed-42 через тот же путь сборки даёт голден 9bc823a7 (D-072)', () => {
     const { world, scheduler } = buildLive(42);
     scheduler.run(world, TICKS_PER_DAY);
     expect(hashSnapshot(serialize(world))).toBe(GOLDEN_DAY1_SEED42);
@@ -572,6 +572,52 @@ describe('MUST · Целостность: конвейер не падает и 
       expect(() => profileOf(seed)).not.toThrow();
       expect(profileOf(seed).world.tick).toBe(GATE_TICKS);
     }
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// MUST-9 — ГЕЙТ PERCEPTION ПО АКТЁРАМ (P-2, D-072): на РЕАЛЬНОМ конвейере (worldgen
+// содержит 2 поселения + 3 аномальных поля — носители Position, но НЕ актёры) ни
+// одно perception/spotted НЕ ссылается на не-актора, а счётчик «замечено» зафиксирован
+// числом (шум декораций убран). settlement-inert покрывает ТОЛЬКО поселения через
+// Ф1-конвейер; здесь — ОБА класса не-акторов (Settlement И AnomalyField) на полном
+// Ф2-конвейере, тем же путём, что headless-CLI.
+// ═════════════════════════════════════════════════════════════════════════════
+describe('MUST · Гейт Perception по актёрам: не-акторы (поселения+поля) вне spotted (P-2, D-072)', () => {
+  /** perception/spotted, ссылающиеся на не-актора как observer ИЛИ target. */
+  function nonActorSpotted(world: SimWorld, log: readonly SimEvent[]): readonly SimEvent[] {
+    const nonActors = new Set<EntityId>([
+      ...queryEntities(world.ecs, [Settlement]),
+      ...queryEntities(world.ecs, [AnomalyField]),
+    ]);
+    return log.filter(
+      (e) =>
+        e.type === 'perception/spotted' &&
+        (nonActors.has((e.payload as { observer: EntityId }).observer) ||
+          nonActors.has((e.payload as { target: EntityId }).target)),
+    );
+  }
+
+  it('за 10 дней (seed 42) НИ ОДНО perception/spotted не числит поселение/поле (наблюдатель или цель)', () => {
+    // Реюз кэшированного 10-дневного профиля: мир реально содержит не-акторов…
+    const p = profileOf(42);
+    expect(queryEntities(p.world.ecs, [Settlement]).length).toBe(getSettlements().length);
+    expect(queryEntities(p.world.ecs, [AnomalyField]).length).toBeGreaterThan(0);
+    // …и за все 10 дней ни разу не «замечен» и не «замечал» — чистый актёр-нарратив.
+    const noise = nonActorSpotted(p.world, p.log);
+    expect(noise, noise.slice(0, 5).map((e) => `id=${e.id} ${JSON.stringify(e.payload)}`).join(' | ')).toEqual([]);
+  });
+
+  it('счётчик perception/spotted за день-1 seed42 ЗАФИКСИРОВАН числом: 10097 (шум не-акторов убран, D-072)', () => {
+    // Голден-число «замечаний» за день на том же пути, что CLI (D-072: 16358→10097
+    // после P-2). Смена вверх значила бы возврат шума не-акторов ИЛИ регресс гейта;
+    // смена вниз — потерю актёр-восприятия. Держим ровно 10097 как якорь «только шум убран».
+    const { world, scheduler } = buildLive(42);
+    scheduler.run(world, TICKS_PER_DAY);
+    const spotted = world.bus.log.filter((e) => e.type === 'perception/spotted');
+    expect(spotted).toHaveLength(10097);
+    // И ни одно из них — не про декорацию (сквозная проверка на день-1).
+    expect(nonActorSpotted(world, world.bus.log)).toEqual([]);
   });
 });
 

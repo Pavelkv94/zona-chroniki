@@ -9,15 +9,30 @@
  * системы Perception напрямую не зовёт (TaskSelection 1.8/Encounter 1.10 читают
  * `contacts` и реагируют на `spotted`/`fear`).
  *
+ * ── ГЕЙТ ПО АКТЁРАМ (P-2, D-072, законы №6/№10) ──────────────────────────────
+ * Восприятие — про ЖИВЫХ действующих лиц, а не про декорации. АКТЁР = носитель
+ * тега `Human` ЛИБО данных-компонента `Animal` (`isActor`): единственные, кто
+ * ходит, охотится, грабит, бежит и попадает в летопись/радио (Фаза 3). Не-акторные
+ * носители `Position` — ПОСЕЛЕНИЯ (`Settlement`, 2.2) и АНОМАЛЬНЫЕ ПОЛЯ
+ * (`AnomalyField`, 2.9) — инертны: они цели задач по ЛОКАЦИИ (TRADE/SEARCH таргетят
+ * `loc`, не contacts), но НЕ участники встреч. Поэтому в бакеты Perception
+ * попадают ТОЛЬКО актёры: не-акторы исключаются И как наблюдаемые (никто не «замечает
+ * аномальное поле»), И как наблюдатели (поселение никого не «видит»). Так contacts
+ * содержат лишь актёр-vs-актёр, а `perception/spotted` не засоряется шумом не-акторов
+ * (иначе значимость/нарратив Фазы 3 тратились бы на декорации). Различение —
+ * data-driven по КОМПОНЕНТАМ (закон №10/№6), НЕ по хардкод-eid: `hasComponent(Human)
+ * || hasComponent(Animal)`. `Human` — тег, `Animal` — данные-компонент; отдельного
+ * тега Animal нет (D-019), носительство `Animal` само отделяет зверя от декорации.
+ *
  * ── Партиция по локации (D-023, бюджет 1.6 мс — D-006) ───────────────────────
- * Наивное «каждый видит каждого» — O(N²) по всему миру. Вместо этого носители
- * `Position` РАСКЛАДЫВАЮТСЯ ПО БАКЕТАМ локаций: контакт возможен ТОЛЬКО внутри
- * своей локации (co-located) или со смежной, чья цель — наша локация («замечен на
- * подходе»). Сравнения идут ВНУТРИ бакета (+ бакеты соседей), поэтому стоимость —
- * O(Σ бакет²) ≪ O(N²): сущности из НЕ-смежных локаций никогда не сравниваются.
- * Обход детерминирован (закон №8): бакеты заполняются обходом `queryEntities`
- * (сорт. по eid ⇒ каждый бакет уже отсортирован), локации-ключи обходятся по
- * возрастанию, контакты и события упорядочены по eid.
+ * Наивное «каждый видит каждого» — O(N²) по всему миру. Вместо этого АКТЁРЫ —
+ * носители `Position` с `Human`/`Animal` (см. гейт выше) — РАСКЛАДЫВАЮТСЯ ПО БАКЕТАМ
+ * локаций: контакт возможен ТОЛЬКО внутри своей локации (co-located) или со смежной,
+ * чья цель — наша локация («замечен на подходе»). Сравнения идут ВНУТРИ бакета
+ * (+ бакеты соседей), поэтому стоимость — O(Σ бакет²) ≪ O(N²): сущности из
+ * НЕ-смежных локаций никогда не сравниваются. Обход детерминирован (закон №8): бакеты
+ * заполняются обходом `queryEntities` (сорт. по eid ⇒ каждый бакет уже отсортирован),
+ * локации-ключи обходятся по возрастанию, контакты и события упорядочены по eid.
  *
  * ── Контакты (COLD в ResourceStore, D-023; форма 1.10a — `Contact[]`, D-030) ──
  * Для каждой сущности контакт = ОТСОРТИРОВАННЫЙ ПО `target` массив записей
@@ -66,7 +81,7 @@ import type { Contact, EntityId, EventId, LocationId } from '@zona/shared';
 import type { System, SystemCtx } from '../core/system';
 import type { EventBus } from '../core/events';
 import { queryEntities, hasComponent } from '../core/ecs';
-import { Position, Needs, Animal } from '../core/components';
+import { Position, Needs, Animal, Human } from '../core/components';
 import { neighbors, getSpecies } from '../data/index';
 import { FEAR_FROM_THREAT_PER_TICK, NEED_MAX } from '../balance/needs';
 
@@ -86,6 +101,16 @@ const ANIM = Animal as unknown as { readonly species: Uint8Array };
 /** Значение, зажатое в отрезок [min, max]. */
 function clamp(v: number, min: number, max: number): number {
   return v < min ? min : v > max ? max : v;
+}
+
+/**
+ * true, если `eid` — АКТЁР: носитель тега `Human` ИЛИ данных-компонента `Animal`
+ * (P-2, D-072). Только актёры воспринимают и воспринимаются; не-акторные носители
+ * `Position` (Settlement 2.2, AnomalyField 2.9) сюда не проходят и в бакеты не
+ * попадают. Различение — по КОМПОНЕНТАМ (закон №6/№10), НЕ по хардкод-eid.
+ */
+function isActor(world: SystemCtx['world'], eid: EntityId): boolean {
+  return hasComponent(world.ecs, Human, eid) || hasComponent(world.ecs, Animal, eid);
 }
 
 /**
@@ -200,11 +225,16 @@ export const Perception: System = {
     const { world, bus } = ctx;
     const carriers = queryEntities(world.ecs, [Position]);
 
-    // ── ПАРТИЦИЯ: раскладываем носителей по бакетам локаций. Обход carriers —
+    // ── ПАРТИЦИЯ: раскладываем АКТЁРОВ по бакетам локаций. Обход carriers —
     // по возрастанию eid (queryEntities сортирует), поэтому каждый бакет уже
-    // отсортирован по eid без доп. сортировки (закон №8).
+    // отсортирован по eid без доп. сортировки (закон №8). Гейт `isActor` (P-2,
+    // D-072) отсекает не-акторные носители Position (Settlement/AnomalyField) ПРЯМО
+    // при раскладке: они не попадают в бакет ⇒ не становятся ни наблюдателем, ни
+    // целью контакта ⇒ не порождают шумовых perception/spotted. Фильтрация здесь, а
+    // не отдельным `.filter` — без лишней аллокации в горячем цикле (D-006).
     const buckets = new Map<number, EntityId[]>();
     for (const eid of carriers) {
+      if (!isActor(world, eid)) continue;
       const loc = POS.loc[eid] as number;
       let bucket = buckets.get(loc);
       if (bucket === undefined) {
