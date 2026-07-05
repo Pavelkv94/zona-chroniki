@@ -2116,3 +2116,56 @@ buildPhase3 слит, resume-харнесс Ф3, GOLDEN_DAY1_SEED42 429867e2, do
 (day1 429867e2, day100 0f1ef408 UN-SKIP, таймаут 120с, восстановленные горизонты). НЕ трогали:
 логику Radio/Rumors/Chronicle, порядок PHASE3_SYSTEMS, balance-константы (структурный фикс, тюнинг
 не потребовался).
+
+## D-076 | Фаза 4 / задача 4.1 | 2026-07-05
+Решение (VIEW-КОНТРАКТ Sim→UI + экспортёры — ФУНДАМЕНТ Фазы 4: интерфейс наблюдателя). Сим ДО этого
+НЕ отдавал наружу состояние сущностей (ECS-внутренности приватны, D-011). 4.1 даёт UI СЕРИАЛИЗУЕМЫЙ
+«вид» на тик — plain-данные `@zona/shared` БЕЗ утечки bitecs (закон №5). Read-only, НЕ система, в
+конвейер НЕ входит (D-080: Фаза 4 — наблюдатель, не участник ⇒ голдены целы).
+
+── ФОРМЫ (packages/shared/src/view.ts, plain, без bitecs) ────────────────────────
+`WorldView {day, tick, weather, entities:EntityView[] (СОРТ по eid), population:{humans,animals,corpses}}`
+— ЛЁГКИЙ снимок КАЖДЫЙ тик. `EntityView {eid, kind:'human'|'animal'|'corpse'|'settlement', faction|null,
+loc, dest|null, etaTicks, hpFrac[0..1], task|null, inCombat, carrying, alive}` — минимум для карты/списка.
+`kind` — СТРОКОВЫЙ enum (закон №5: наружу не течёт ECS-тег), РАСШИРЯЕМ (mutant/zombie APPEND-ONLY, когда
+их сущности появятся). `EntityDetail {eid, kind, faction, name?, loc, dest?, species?, needs, hp, task?,
+inventory:[itemId,qty][] (сорт), money, memory, relations, fame, recentEvents:EventId[]}` — ТЯЖЁЛОЕ полное
+состояние ПО КЛИКУ (не каждый тик). memory/relations — уже типизированные plain-контракты 2.15 (D-050/D-058).
+
+── ЭКСПОРТЁРЫ (packages/sim/src/view/export.ts, read-only как renderEventLog D-006) ──
+`exportWorldView(world)` итерирует носителей видимых тегов (Human/Animal/Corpse/Settlement) через
+queryEntities ВНУТРИ, классифицирует kind (Corpse ПЕРВЫМ — мёртвый человек несёт Human+Corpse ⇒ 'corpse'),
+читает SoA под гейтом hasComponent (D-024), faction/carrying из ResourceStore, погоду из WorldClock,
+day=floor(tick/TICKS_PER_DAY). `exportEntityDetail(world, eid)` — existsEntity? иначе null (и null для
+существующей НЕ-видимой сущности — часы/поле: их нельзя «кликнуть»); глубокое чтение компонентов +
+ResourceStore ('name'/'faction'/'inventory'/'money'/'memory'/'relations'/'fame') + скан лога для
+recentEvents. Обе ЧИСТЫЕ/детерминированные (обходы сорт по eid/itemId, закон №8): hashSnapshot до==после
+(тест) ⇒ мир не мутирован.
+
+── inCombat (РЕШЕНО: false + TODO) ───────────────────────────────────────────────
+Столкновение живёт РОВНО ОДИН тик (encounter/started+resolved в одном тике, events.ts) — персистентного
+«в бою» состояния на сущности НЕТ, читать нечего. Вычислять сканом bus.at(tick) дорого (O(лог) на КАЖДЫЙ
+per-tick экспорт) и неоднозначно (буфер текущего тика ещё не закоммичен). В 4.1 — всегда false; «недавно
+в бою» из закоммиченного окна encounter-событий отложено в отдельную задачу Фазы 4 (не тянуть тяжёлый
+лог-скан в горячий экспорт).
+
+── carrying (РЕШЕНО) ─────────────────────────────────────────────────────────────
+Есть ли в ResourceStore 'inventory' предмет kind 'artifact' (getItem, закон №10). O(инвентарь) на сущность
+— дёшево. recentEvents: participantsOf (канон нарратива, D-067) ∪ прямые актёры распорядка (task/selected,
+move/*), последние RECENT_EVENTS_LIMIT=50 (ПРЕЗЕНТАЦИОННЫЙ предел, НЕ balance-константа — не влияет на мир).
+
+── ЗАКОН №5 (граница ECS↔UI, подтверждено) ───────────────────────────────────────
+view.ts зависит ТОЛЬКО от plain-модулей shared (./ids, ./memory) — grep-тест закрепляет (нет 'from bitecs',
+нет core/ecs). Обёртки core/ecs (queryEntities/hasComponent/existsEntity) ЧИТАЮТСЯ ВНУТРИ export.ts, но
+НЕ реэкспортируются из @zona/sim (тест: sim.queryEntities/hasComponent/existsEntity === undefined, D-011).
+НИ ОДИН bitecs-тип не течёт в WorldView/EntityView/EntityDetail. /sim остаётся headless.
+
+── ИНВАРИАНТЫ (держатся) ─────────────────────────────────────────────────────────
+npm run test ЗЕЛЁНЫЙ (64 файла, 1681 тест; +13 тестов 4.1). typecheck exit 0. ГОЛДЕНЫ НЕ СДВИНУТЫ
+(экспортёры не в конвейере/worldgen): sim:100days 0f1ef408, пустой мир 481914ae, day1 seed42 429867e2 —
+все цели (cli.test 35/35). EconomyInvariant не затронут (view ничего не творит/не эмитит).
+
+Затрагивает: packages/shared/src/view.ts (НОВЫЙ, формы), packages/shared/src/index.ts (реэкспорт типов),
+packages/sim/src/view/export.ts (НОВЫЙ, экспортёры), packages/sim/src/index.ts (реэкспорт функций+типов),
+packages/headless/src/view-4.1.test.ts (НОВЫЙ, тесты), docs/diagrams/view-export-4.1.md (НОВЫЙ). НЕ трогали:
+конвейер, worldgen, системы, balance, обёртки core/ecs (наружу не выведены). D-080: Фаза 4 — наблюдатель.

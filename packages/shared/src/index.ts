@@ -33,6 +33,18 @@ export type { Contact } from './contacts';
 
 export type { Subject, MemoryRecord, RelationEntry, AvoidEntry } from './memory';
 
+// Контракт «вид на мир» Sim→UI (задача 4.1, D-076): plain-снимок состояния сущностей
+// для наблюдателя Фазы 4 (карта/список/инспектор). Формы БЕЗ bitecs/DOM (закон №5);
+// экспортёры (`@zona/sim/view/export`) собирают их read-only (D-006/D-080).
+export type {
+  EntityKind,
+  EntityView,
+  WorldView,
+  EntityName,
+  EntityTask,
+  EntityDetail,
+} from './view';
+
 export type { JsonValue, SnapshotJSON, ComponentColumnJSON } from './snapshot';
 
 export type {

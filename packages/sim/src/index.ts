@@ -95,6 +95,22 @@ export { Temperament, TEMPERAMENT_MESSAGE, temperamentCode } from './core/compon
 // Сериализация read-path для resume-прогонов CLI (save/load через весь конвейер).
 export type { SimEvent } from '@zona/shared';
 
+// ── View-контракт Sim→UI (задача 4.1, D-076) — ФУНДАМЕНТ Фазы 4 ──────────────
+// Экспортёры «вида на мир»: read-only срез приватного ECS+ResourceStore в plain-формы
+// `@zona/shared` (`WorldView`/`EntityView`/`EntityDetail`) для Worker-моста и панелей UI.
+// НЕ система (в конвейер не входят, worldgen не зовёт) ⇒ голдены целы (D-080); ЧИСТОЕ
+// чтение (D-006, hash до==после); НИ ОДИН bitecs-тип наружу не течёт (закон №5/D-011 —
+// обёртки core/ecs читаются ВНУТРИ, не реэкспортируются). Типы форм — из @zona/shared.
+export { exportWorldView, exportEntityDetail } from './view/export';
+export type {
+  EntityKind,
+  EntityView,
+  WorldView,
+  EntityName,
+  EntityTask,
+  EntityDetail,
+} from '@zona/shared';
+
 // Система Economy (2.3): жизнь поселений (потребление/производство/стройка/мораль).
 // НЕ входит в registerPhase1Systems (подключит 2.16) — экспортируется как System,
 // чтобы её можно было прогнать в отдельном планировщике (headless-инвариант 2.3).
