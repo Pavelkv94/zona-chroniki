@@ -1,0 +1,67 @@
+{
+  "kinds": {
+    "human": { "shape": "circle", "sizePx": 10 },
+    "animal": { "shape": "triangle", "sizePx": 9 },
+    "mutant": { "shape": "diamond", "sizePx": 10 },
+    "zombie": { "shape": "cross", "sizePx": 10 },
+    "corpse": { "shape": "circle", "sizePx": 8 },
+    "settlement": { "shape": "square", "sizePx": 12 }
+  },
+  "factions": {
+    "loners": { "color": "#6d8296" },
+    "military": { "color": "#6f7a44" },
+    "duty": { "color": "#a24b3b" },
+    "bandits": { "color": "#8a6d3a" }
+  },
+  "neutralColors": {
+    "animal": "#8a6a45",
+    "mutant": "#7d5a8f",
+    "zombie": "#5f6b52",
+    "corpse": "#555049",
+    "settlement": "#6f7d8a"
+  },
+  "modifiers": {
+    "woundedThreshold": 0.4,
+    "woundedRingColor": "#b5473a",
+    "combatBlink": { "periodMs": 520, "minAlpha": 0.35 },
+    "carryDotColor": "#c9b46a",
+    "corpseAlpha": 0.4,
+    "sleepGlyph": "zzz"
+  },
+  "layout": {
+    "0": { "x": 0.08, "y": 0.86 },
+    "1": { "x": 0.24, "y": 0.72 },
+    "2": { "x": 0.4, "y": 0.86 },
+    "3": { "x": 0.3, "y": 0.52 },
+    "4": { "x": 0.44, "y": 0.3 },
+    "5": { "x": 0.52, "y": 0.62 },
+    "6": { "x": 0.7, "y": 0.52 },
+    "7": { "x": 0.64, "y": 0.26 },
+    "8": { "x": 0.82, "y": 0.14 },
+    "9": { "x": 0.93, "y": 0.05 }
+  },
+  "edges": [
+    [0, 1],
+    [1, 2],
+    [1, 3],
+    [2, 5],
+    [3, 5],
+    [3, 4],
+    [4, 5],
+    [5, 6],
+    [4, 7],
+    [6, 7],
+    [7, 8],
+    [8, 9]
+  ],
+  "palette": {
+    "background": "#141210",
+    "edge": "#2a2621",
+    "nodeFill": "#221e1a",
+    "nodeStroke": "#4a4238",
+    "text": "#c8bfae",
+    "dim": "#7d7566",
+    "nodeRadiusPx": 6,
+    "labelPx": 11
+  }
+}

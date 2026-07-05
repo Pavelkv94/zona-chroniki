@@ -15,3 +15,19 @@ export type { WorkerClient, WorkerMessageHandler } from './bridge/worker-client'
 export { useUiStore, __resetWorkerClientForTest } from './store/store';
 export type { UiState, SimStats } from './store/store';
 export { default as App } from './App';
+
+// Карта наблюдателя (задача 4.2): Canvas-компонент + чистые аксессоры визуального
+// маппинга/геометрии (тестируемы без DOM). Визуальный маппинг — данные (закон №10).
+export { default as MapCanvas } from './map/MapCanvas';
+export {
+  VISUAL_CONFIG,
+  glyphForKind,
+  colorForEntity,
+  isWounded,
+  isSleeping,
+  combatAlpha,
+  nodeLayout,
+  validateVisualConfig,
+} from './map/visual-config';
+export type { VisualConfig } from './map/visual-config';
+export { layoutToPixels, lerpPoint, edgeProgress, clusterOffset, hitTest } from './map/geometry';

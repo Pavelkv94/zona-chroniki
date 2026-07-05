@@ -17,6 +17,7 @@
 
 import type { CSSProperties, ReactNode, ReactElement } from 'react';
 import { useUiStore } from './store/store';
+import MapCanvas from './map/MapCanvas';
 
 // ── Палитра (тёмный фон #141210-подобный, приглушённые тона) ─────────────────
 const COLORS = {
@@ -65,7 +66,11 @@ const heading: CSSProperties = {
 const todo: CSSProperties = { color: COLORS.dim, fontStyle: 'italic' };
 
 /** Названия погоды по коду (презентация; полноценный справочник — на панели карты 4.2). */
-const WEATHER_LABEL = ['ясно', 'облачно', 'дождь', 'гроза', 'туман', 'выброс'];
+// Порядок СТРОГО по WEATHER_TYPES (@zona/sim: clear/overcast/rain/fog/storm) —
+// индекс = код погоды в WorldView.weather. Рассинхрон дал бы «туман»↔«гроза»
+// перепутанными в тайм-баре (карта маппит через WEATHER_TYPES). Выброса как погоды
+// пока нет (Фаза 3b) — лишней метки быть не должно.
+const WEATHER_LABEL = ['ясно', 'облачно', 'дождь', 'туман', 'гроза'];
 
 function Panel(props: { area: string; title: string; children: ReactNode }): ReactElement {
   return (
@@ -89,7 +94,6 @@ export default function App(): ReactElement {
   const weatherCode = view?.weather ?? 0;
   const weather = WEATHER_LABEL[weatherCode] ?? `код ${weatherCode}`;
   const entityCount = view?.entities.length ?? 0;
-  const pop = view?.population ?? { humans: 0, animals: 0, corpses: 0 };
   // Внутриигровое время суток из тика (1 тик = 1 минута по TICKS_PER_DAY=1440).
   const minuteOfDay = tick % 1440;
   const hh = String(Math.floor(minuteOfDay / 60)).padStart(2, '0');
@@ -98,20 +102,7 @@ export default function App(): ReactElement {
   return (
     <div style={shell}>
       <Panel area="map" title="Карта — схематичный граф Зоны">
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: '15px', color: COLORS.text }}>
-              День {day} · {hh}:{mm} · {weather}
-            </div>
-            <div style={{ marginTop: '0.4rem', color: COLORS.dim }}>
-              сущностей: <b style={{ color: COLORS.accent }}>{entityCount}</b>
-              {'  '}(люди {pop.humans} · звери {pop.animals} · трупы {pop.corpses})
-            </div>
-            <div style={{ ...todo, marginTop: '1rem' }}>
-              TODO 4.2: Canvas-карта с глифовым визуальным языком
-            </div>
-          </div>
-        </div>
+        <MapCanvas />
       </Panel>
 
       <Panel area="radio" title="Радиоэфир">

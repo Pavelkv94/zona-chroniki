@@ -65,9 +65,11 @@ describe('App — jsdom smoke (фиксированный WorldView)', () => {
 
   it('рендерит число сущностей и сводку населения', () => {
     render(<App />);
-    // Карта: «сущностей: 5 (люди 2 · звери 2 · трупы 1)».
+    // HUD карты (4.2): «население 5 (люди 2 · звери 2 · трупы 1)».
     expect(screen.getByText(/люди 2 · звери 2 · трупы 1/)).toBeTruthy();
-    expect(screen.getByText('5')).toBeTruthy();
+    expect(screen.getByText(/население 5/)).toBeTruthy();
+    // Тайм-бар дублирует счётчик сущностей.
+    expect(screen.getByText(/сущностей 5/)).toBeTruthy();
   });
 
   it('тайм-бар показывает паузу и активный мост', () => {

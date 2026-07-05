@@ -63,9 +63,11 @@ describe('App — четыре области макета и плейсхолд
     expect(screen.getByText(/Летопись \/ Инспектор/)).toBeTruthy();
   });
 
-  it('панели-заглушки несут TODO будущих задач (4.2/4.4/4.5–4.6)', () => {
+  it('панели-заглушки несут TODO будущих задач (4.4/4.5–4.6); карта — уже холст (4.2)', () => {
     render(<App />);
-    expect(screen.getByText(/TODO 4.2/)).toBeTruthy();
+    // Карта реализована (задача 4.2): вместо TODO — Canvas-компонент.
+    expect(screen.getByTestId('map-canvas')).toBeTruthy();
+    expect(screen.queryByText(/TODO 4.2/)).toBeNull();
     expect(screen.getByText(/TODO 4.4/)).toBeTruthy();
     expect(screen.getByText(/TODO 4.5–4.6/)).toBeTruthy();
   });
