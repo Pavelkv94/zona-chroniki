@@ -2285,3 +2285,66 @@ read-only, вне конвейера) ⇒ голдены целы: sim:100days 0
 429867e2. npm run typecheck exit 0; npm run test зелёный (единичный флейк cli-голдена day100 —
 ТАЙМАУТ под параллельной нагрузкой, не рассинхрон: прямой sim:100days = 0f1ef408, см. vitest.config
 про параллельное замедление голденов).
+
+## D-082 | Фаза 4 / задача 4.8 | 2026-07-05
+Решение (СОХРАНЕНИЯ через IndexedDB: snapshot JSON + seed + tick + UI-метки; resume =
+`deserialize`). Наблюдатель сохраняет/загружает мир в браузерную БД. GDD §13.1: сохранение —
+это `SnapshotJSON` (сериализация мира) + seed + tick; загрузка — `deserialize` того же снапшота
+в воркере (resume). НИКАКОГО отдельного формата: сейв = ровно то, что воркер уже умеет
+сериализовать/десериализовать (D-008/C-4 resume-safe, доказано Фазами 0–3).
+
+── ПОЧЕМУ IndexedDB, а не localStorage/файл ─────────────────────────────────────
+`SnapshotJSON` мира — крупная структура (сущности + компоненты SoA + лог событий); localStorage
+(строковый, ~5 МБ, синхронный) не тянет и блокирует UI-поток. IndexedDB — асинхронное
+структурированное хранилище браузера (structured clone — глубокая копия plain-JSON без потерь),
+ровно под задачу. Файловый экспорт — на будущее (не в объёме 4.8).
+
+── ЗАКОН №5 (IndexedDB/DOM только в /ui) ────────────────────────────────────────
+Персист-слой `packages/ui/src/persistence/saves.ts` — единственное место IndexedDB. НЕ импортирует
+`@zona/sim` (ни логику, ни константы): связь с симуляцией — лишь plain-тип `SnapshotJSON` из
+`@zona/shared`, который ХРАНИТСЯ/ВОЗВРАЩАЕТСЯ байт-в-байт, не интерпретируется. `@zona/sim`
+остаётся headless (в Node сохранений нет — презентационная функция наблюдателя, закон №1: мир
+крутится и без сейвов).
+
+── КОНТРАКТ персист-слоя (createSavesStore) ─────────────────────────────────────
+`SavesStore`: `saveSnapshot({data,seed,tick,name?,savedAt?,id?}) → Promise<id>`; `listSaves() →
+Promise<SaveMeta[]>` (метаданные без тяжёлого `data`, сорт по savedAt убыв. — новые сверху);
+`loadSnapshot(id) → Promise<SavedSnapshot|null>` (полная запись); `deleteSave(id) → Promise<void>`.
+БД «zona-saves», object-store «snapshots» (keyPath `id`, put = upsert). Доступ к IndexedDB
+абстрагирован через ИНЪЕКЦИЮ (`createSavesStore({factory,idGen,clock})`) — по умолчанию глобальный
+`indexedDB`/`crypto.randomUUID`/`Date.now`; в тестах — `fake-indexeddb` + детерминированные id/часы.
+День НЕ хранится (выводится презентацией из tick через TICKS_PER_DAY — чтобы не тянуть балансовую
+константу в персист-слой, закон №5).
+
+── ЗАКОН №8 (resume-детерминизм) + UI-МЕТКИ ─────────────────────────────────────
+Save/load НЕ влияют на содержимое мира: save = сериализация текущего состояния; load = `init{seed,
+snapshot}` воркеру → `deserialize` → продолжение БИТ-В-БИТ (D-008/C-4 — eventId монотонен через
+save/load; serialize/deserialize resume-safe доказан ранее). Персист-слой лишь ХРАНИТ снапшот без
+искажений (structured clone = глубокая копия; тест `saves.test.ts` — round-trip data toEqual,
+включая независимость копии от мутации оригинала). id/savedAt/name — ЧИСТО UI-метки: генерируются
+в /ui (Date.now/crypto.randomUUID допустимы — закон №8 про СИМУЛЯЦИЮ, не UI-презентацию) и в мир
+НЕ текут (в воркер при загрузке уходят ТОЛЬКО seed+snapshot; тест store.saves — init не несёт
+id/savedAt/name). Закон №3: загруженный мир = ровно сериализованное (deserialize), не выдуманное.
+
+── ПОТОК save/load ──────────────────────────────────────────────────────────────
+requestSave(name?): стор ставит module-флаг `pendingSaveName` и шлёт воркеру `requestSnapshot`
+(тот же контракт 4.0). Пришедший snapshot-ответ (applyMessage) — если флаг взведён — персистится в
+IndexedDB под именем; флаг снимается СРАЗУ (реентерабельность: следующий snapshot без save не
+дублирует). По завершении — `savedIndicator` (индикатор «✓ сохранено») + `refreshSaves`. loadSave(id):
+`loadSnapshot` из IndexedDB → `init{seed, snapshot}` воркеру (resume). refreshSaves/deleteSave —
+список/удаление + рефреш. Персист-стор — module-синглтон (ленивый), инъекция в тестах через
+`__setSavesStoreForTest`.
+
+── UI (SaveControls в тайм-баре) ────────────────────────────────────────────────
+`packages/ui/src/controls/SaveControls.tsx`: поле имени + «Сохранить» (блокируется без моста),
+меню «Загрузить ▾» (при открытии refreshSaves; список → «Загрузить»(resume)/«✕»(удалить)),
+индикатор «✓ сохранено». Штабная палитра (та же, что TimeControls). @zona/sim не импортируется
+(TICKS_PER_DAY — публичная балансовая константа для вывода дня, как в App/TimeControls).
+
+── ФАЙЛЫ ────────────────────────────────────────────────────────────────────────
+НОВЫЕ: packages/ui/src/persistence/saves.ts (+.test.ts), controls/SaveControls.tsx (+.test.tsx),
+store/store.saves.test.ts. ИЗМЕНЕНЫ: store/store.ts (+saves/savedIndicator состояние,
+requestSave/loadSave/refreshSaves/deleteSave, персист в applyMessage 'snapshot', __setSavesStoreForTest),
+App.tsx (монтаж SaveControls), package.json (devDep fake-indexeddb). /sim/shared/headless НЕ тронуты
+⇒ голдены целы: sim:100days 0f1ef408, пустой мир 481914ae, day1 seed42 429867e2 (UI-only задача).
+npm run typecheck exit 0; npm run test зелёный.

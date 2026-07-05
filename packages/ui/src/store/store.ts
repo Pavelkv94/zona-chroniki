@@ -36,6 +36,7 @@ import type {
 } from '@zona/shared';
 import { applyDelta } from '../bridge/delta';
 import { createWorkerClient, type WorkerClient } from '../bridge/worker-client';
+import { createSavesStore, type SaveMeta, type SavesStore } from '../persistence/saves';
 
 /**
  * Размер окна лог-событий (кольцевой буфер). ПРЕЗЕНТАЦИОННЫЙ предел UI (сколько
@@ -100,6 +101,16 @@ export interface UiState {
   readonly stats: SimStats | null;
   /** Последний полученный снапшот (для сохранения), `null` — не запрашивался. */
   readonly lastSnapshot: { readonly data: SnapshotJSON; readonly seed: Seed; readonly tick: Tick } | null;
+  /**
+   * СПИСОК СОХРАНЕНИЙ (метаданные для меню, задача 4.8/D-082). Обновляется `refreshSaves`/
+   * после save/delete. ПРЕЗЕНТАЦИЯ: читается из IndexedDB (/ui, закон №5), на мир не влияет.
+   */
+  readonly saves: readonly SaveMeta[];
+  /**
+   * ИНДИКАТОР «сохранено» (задача 4.8): id+время последнего успешного сохранения, `null` —
+   * ещё не сохраняли/сброшено. Чистая UI-метка (закон №8: в мир не течёт).
+   */
+  readonly savedIndicator: { readonly id: string; readonly savedAt: number } | null;
   /** Подключён ли живой воркер-мост (создан после init). */
   readonly connected: boolean;
 
@@ -121,6 +132,23 @@ export interface UiState {
   /** Запросить полный снапшот мира (сохранение). */
   requestSnapshot(): void;
 
+  // ── Сохранения (IndexedDB, задача 4.8/D-082 — персист только в /ui, закон №5) ─
+  /**
+   * СОХРАНИТЬ мир: шлёт воркеру `requestSnapshot`; пришедший снапшот-ответ персистится в
+   * IndexedDB под опц. именем. Асинхронно (снапшот приходит сообщением) — по завершении
+   * обновляет `saves`/`savedIndicator`. UI-метки id/время генерируются в персист-слое.
+   */
+  requestSave(name?: string): void;
+  /**
+   * ЗАГРУЗИТЬ сохранение по id: читает запись из IndexedDB и делает `init{seed, snapshot}`
+   * → воркер `deserialize` (resume БИТ-В-БИТ, закон №8). Метки id/время в мир НЕ идут.
+   */
+  loadSave(id: string): void;
+  /** Обновить список сохранений из IndexedDB (для меню «Загрузить»). */
+  refreshSaves(): void;
+  /** Удалить сохранение по id, затем обновить список. */
+  deleteSave(id: string): void;
+
   // ── Применение входящих сообщений воркера (вызывает WorkerClient) ───────────
   /** Применить сообщение `WorkerToUi` к состоянию (view/viewDelta/logDelta/…). */
   applyMessage(msg: WorkerToUi): void;
@@ -133,6 +161,23 @@ export interface UiState {
  */
 let client: WorkerClient | null = null;
 
+/**
+ * ПЕРСИСТ-СТОР сохранений (IndexedDB, D-082) — module-level синглтон, создаётся ЛЕНИВО при
+ * первом save/list/delete (в браузере). Держим вне zustand-состояния: это транспорт к БД,
+ * не данные для рендера. В тестах подменяется `__setSavesStoreForTest` (fake-indexeddb).
+ */
+let savesStore: SavesStore | null = null;
+
+/**
+ * ОЧЕРЕДЬ ожидающих сохранений (module-level, не render-state): FIFO-имена, под которыми
+ * персистить приходящие снапшот-ответы. Каждый `requestSave` кладёт имя И шлёт свой
+ * `requestSnapshot`, поэтому счётчик ответов совпадает с длиной очереди — при быстром двойном
+ * сохранении ни одно не теряется (скаляр раньше затирался вторым кликом). Пустая очередь —
+ * обычный `requestSnapshot` без персиста. Держим ВНЕ состояния, чтобы `requestSnapshot` и
+ * `requestSave` делили снапшот-ответ воркера, но не плодили ре-рендеры на транзиентный флаг.
+ */
+let pendingSaveNames: string[] = [];
+
 export const useUiStore = create<UiState>((set, get) => {
   /** Гарантировать наличие клиента (создать при первом обращении в браузере). */
   const ensureClient = (): WorkerClient => {
@@ -140,6 +185,14 @@ export const useUiStore = create<UiState>((set, get) => {
       client = createWorkerClient((msg) => get().applyMessage(msg));
     }
     return client;
+  };
+
+  /** Гарантировать наличие персист-стора (создать при первом обращении в браузере). */
+  const ensureSaves = (): SavesStore => {
+    if (savesStore === null) {
+      savesStore = createSavesStore();
+    }
+    return savesStore;
   };
 
   return {
@@ -154,6 +207,8 @@ export const useUiStore = create<UiState>((set, get) => {
     paused: true,
     stats: null,
     lastSnapshot: null,
+    saves: [],
+    savedIndicator: null,
     connected: false,
 
     init(seed, snapshot) {
@@ -198,6 +253,39 @@ export const useUiStore = create<UiState>((set, get) => {
 
     requestSnapshot() {
       client?.post({ type: 'requestSnapshot' });
+    },
+
+    requestSave(name) {
+      // Ставим имя в очередь персиста и просим снапшот. Ответ придёт сообщением 'snapshot'
+      // → applyMessage сохранит его в IndexedDB под этим именем (закон №8: id/время —
+      // UI-метки персист-слоя, в мир не текут; воркер получил лишь requestSnapshot).
+      // Очередь (а не скаляр) переживает быстрый двойной клик: два ответа — два сейва.
+      if (client === null) return;
+      pendingSaveNames.push(name ?? '');
+      client.post({ type: 'requestSnapshot' });
+    },
+
+    loadSave(id) {
+      // Читаем запись из IndexedDB и делаем resume: в воркер уходят ТОЛЬКО seed + snapshot
+      // (закон №8 — deserialize даёт мир бит-в-бит; метки id/savedAt/name НЕ передаём).
+      void ensureSaves()
+        .loadSnapshot(id)
+        .then((rec) => {
+          if (rec === null) return;
+          get().init(rec.seed, rec.data);
+        });
+    },
+
+    refreshSaves() {
+      void ensureSaves()
+        .listSaves()
+        .then((saves) => set({ saves }));
+    },
+
+    deleteSave(id) {
+      void ensureSaves()
+        .deleteSave(id)
+        .then(() => get().refreshSaves());
     },
 
     applyMessage(msg) {
@@ -255,6 +343,19 @@ export const useUiStore = create<UiState>((set, get) => {
         }
         case 'snapshot': {
           set({ lastSnapshot: { data: msg.data, seed: msg.seed, tick: msg.tick } });
+          // Если снапшот запрошен ради СОХРАНЕНИЯ (requestSave) — персистим его в IndexedDB.
+          // Имя ЗАБИРАЕМ из головы очереди СРАЗУ (реентерабельность: снапшот без ожидающего
+          // сохранения — обычный requestSnapshot — не персистится). id/время генерирует
+          // персист-слой (UI-метки). FIFO: N быстрых requestSave → N ответов → N сейвов.
+          if (pendingSaveNames.length > 0) {
+            const name = pendingSaveNames.shift() as string;
+            void ensureSaves()
+              .saveSnapshot({ data: msg.data, seed: msg.seed, tick: msg.tick, name })
+              .then((id) => {
+                set({ savedIndicator: { id, savedAt: Date.now() } });
+                get().refreshSaves();
+              });
+          }
           return;
         }
         case 'stats': {
@@ -277,4 +378,14 @@ export const useUiStore = create<UiState>((set, get) => {
 export function __resetWorkerClientForTest(): void {
   client?.terminate();
   client = null;
+  pendingSaveNames = [];
+}
+
+/**
+ * ТЕСТОВАЯ инъекция персист-стора (D-082): подменяет синглтон `savesStore` (обычно —
+ * `createSavesStore({ factory: fake-indexeddb })` или чистый мок). `null` — сбросить, чтобы
+ * следующий вызов создал боевой (глобальный `indexedDB`). Не для продакшена.
+ */
+export function __setSavesStoreForTest(store: SavesStore | null): void {
+  savesStore = store;
 }

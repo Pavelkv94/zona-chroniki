@@ -23,6 +23,7 @@ import RadioLog from './radio/RadioLog';
 import Inspector from './inspector/Inspector';
 import ChronicleLog from './chronicle/ChronicleLog';
 import TimeControls from './controls/TimeControls';
+import SaveControls from './controls/SaveControls';
 import { TICKS_PER_DAY } from '@zona/sim';
 
 // ── Палитра (тёмный фон #141210-подобный, приглушённые тона) ─────────────────
@@ -205,9 +206,12 @@ export default function App(): ReactElement {
           тик {tick} · сущностей {entityCount}
           {stats ? ` · ${stats.tickMs.toFixed(1)} мс/кадр` : ''}
         </span>
-        <span style={{ marginLeft: 'auto', color: connected ? COLORS.accent : COLORS.dim }}>
-          {connected ? 'мост: активен' : 'мост: не подключён'}
-        </span>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '1.2rem' }}>
+          <SaveControls />
+          <span style={{ color: connected ? COLORS.accent : COLORS.dim }}>
+            {connected ? 'мост: активен' : 'мост: не подключён'}
+          </span>
+        </div>
       </section>
     </div>
   );
