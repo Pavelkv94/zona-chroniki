@@ -86,6 +86,12 @@ export interface UiState {
   readonly detail: EntityDetail | null;
   /** eid выбранной для слежения/инспекции сущности. */
   readonly selectedEid: EntityId | null;
+  /**
+   * РЕЖИМ СЛЕЖЕНИЯ (задача 4.7): камера ведёт `selectedEid`. ПРЕЗЕНТАЦИЯ (закон №8):
+   * влияет ЛИШЬ на центрирование ВИДА карты (read-only), тик мира не трогает и воркеру
+   * команду не шлёт. Автоснимается при сбросе выбора (`clearSelection`) и на новый мир.
+   */
+  readonly following: boolean;
   /** Темп: sim-тиков за реальную секунду (`0` — пауза). */
   readonly speed: number;
   /** true, если на паузе (`speed === 0`). */
@@ -110,6 +116,8 @@ export interface UiState {
   inspect(eid: EntityId): void;
   /** Сбросить выбор/деталь (закрыть инспектор). ЧИСТО read-side, воркеру не шлёт. */
   clearSelection(): void;
+  /** Включить/выключить слежение камеры за выбранной сущностью (read-only, закон №8). */
+  setFollowing(on: boolean): void;
   /** Запросить полный снапшот мира (сохранение). */
   requestSnapshot(): void;
 
@@ -141,6 +149,7 @@ export const useUiStore = create<UiState>((set, get) => {
     names: {},
     detail: null,
     selectedEid: null,
+    following: false,
     speed: 0,
     paused: true,
     stats: null,
@@ -149,8 +158,8 @@ export const useUiStore = create<UiState>((set, get) => {
 
     init(seed, snapshot) {
       const c = ensureClient();
-      // Новый мир — чистим окно/летопись/имена/деталь/выбор (прошлый мир больше не актуален).
-      set({ view: null, log: [], chronicleLog: [], names: {}, detail: null, selectedEid: null, stats: null, connected: true });
+      // Новый мир — чистим окно/летопись/имена/деталь/выбор/слежение (прошлый мир не актуален).
+      set({ view: null, log: [], chronicleLog: [], names: {}, detail: null, selectedEid: null, following: false, stats: null, connected: true });
       c.post(snapshot ? { type: 'init', seed, snapshot } : { type: 'init', seed });
     },
 
@@ -176,8 +185,15 @@ export const useUiStore = create<UiState>((set, get) => {
 
     clearSelection() {
       // Закрытие инспектора — чистое обнуление выбора/детали (закон №8: воркеру
-      // команда НЕ шлётся, тик мира не трогается). Симметрично `inspect`.
-      set({ selectedEid: null, detail: null });
+      // команда НЕ шлётся, тик мира не трогается). Симметрично `inspect`. Слежение
+      // теряет цель — снимаем его тоже (нечего вести).
+      set({ selectedEid: null, detail: null, following: false });
+    },
+
+    setFollowing(on) {
+      // ЧИСТО презентация (закон №8): двигает лишь центрирование ВИДА карты, воркеру
+      // команду НЕ шлём, тик мира не трогаем. Без выбранной сущности вести некого.
+      set({ following: on && get().selectedEid !== null });
     },
 
     requestSnapshot() {

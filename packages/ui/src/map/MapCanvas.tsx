@@ -30,8 +30,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties, ReactElement } from 'react';
-import type { EntityView, WorldView, LocationId, EntityId } from '@zona/shared';
-import { getLocation, WEATHER_TYPES } from '@zona/sim';
+import type { EntityView, WorldView, LocationId, EntityId, EntityName } from '@zona/shared';
+import { getLocation, WEATHER_TYPES, TICKS_PER_DAY } from '@zona/sim';
 import { useUiStore } from '../store/store';
 import {
   VISUAL_CONFIG,
@@ -52,6 +52,22 @@ import {
   type HitCandidate,
   type Point,
 } from './geometry';
+import {
+  buildRadioToasts,
+  collectCombatFlashes,
+  collectDeathMarkers,
+  enqueueToasts,
+  followOffset,
+  maxEventId,
+  stepToastQueue,
+  tooltipLabel,
+  visibleToasts,
+  EMPTY_TOAST_QUEUE,
+  type DeathMarker,
+  type CombatFlash,
+  type Toast,
+  type ToastQueue,
+} from './overlays';
 
 // ── Презентационные подписи стабильных код-пространств (глюкод UI, не контент) ──
 const WEATHER_LABEL: Readonly<Record<string, string>> = {
@@ -90,6 +106,10 @@ const PAD_PX = 40;
 const CLUSTER_RADIUS_PX = 12;
 /** Плавность rAF-догона отрисованной позиции к целевой (0..1; выше — быстрее). */
 const SMOOTH = 0.2;
+/** Плавность rAF-догона «камеры» слежения к целевому центрирующему сдвигу (0..1). */
+const CAM_SMOOTH = 0.12;
+/** Период тика очереди тостов (мс реального времени; плашки живут секунды). */
+const TOAST_TICK_MS = 100;
 
 /** Метаданные размещённого глифа кадра (позиция + флаги модификаторов). */
 interface Placement {
@@ -292,6 +312,60 @@ function drawGlyph(
   ctx.restore();
 }
 
+/** Экранная позиция узла локации (или `null`, если id вне раскладки). */
+function nodePx(loc: number, w: number, h: number): Point | null {
+  const pos = nodeLayout(VISUAL_CONFIG, loc);
+  if (pos === null) return null;
+  return layoutToPixels(pos, w, h, PAD_PX);
+}
+
+/**
+ * Нарисовать череп места смерти на узле: символ с альфой затухания (за сутки, игровой
+ * tick) + счётчик «×N» стопки смертей. Символ/микро-геометрия — презентационная мелочь
+ * (как формы глифов); цвет/размер — из narrative-config (закон №10).
+ */
+function drawDeathMarker(ctx: CanvasRenderingContext2D, m: DeathMarker, w: number, h: number): void {
+  const p = nodePx(m.loc, w, h);
+  if (p === null || m.alpha <= 0) return;
+  const s = VISUAL_CONFIG.narrative.skull;
+  ctx.save();
+  ctx.globalAlpha = m.alpha;
+  ctx.fillStyle = s.color;
+  ctx.font = `${s.sizePx}px ui-monospace, monospace`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(s.glyph, p.x, p.y - s.offsetPx);
+  if (m.count > 1) {
+    ctx.fillStyle = s.countColor;
+    ctx.font = `${Math.round(s.sizePx * 0.7)}px ui-monospace, monospace`;
+    ctx.textAlign = 'left';
+    ctx.fillText(`×${m.count}`, p.x + s.sizePx * 0.5, p.y - s.offsetPx);
+  }
+  ctx.restore();
+}
+
+/**
+ * Нарисовать вспышку локации боя: пульсирующее (wall-clock) кольцо вокруг узла, пока
+ * бой «свеж» в окне тиков. Активность — из лога (игровой tick), пульс — от `nowMs`
+ * (презентация, как мигание «в бою» 4.2).
+ */
+function drawCombatFlash(ctx: CanvasRenderingContext2D, f: CombatFlash, w: number, h: number, nowMs: number): void {
+  const p = nodePx(f.loc, w, h);
+  if (p === null) return;
+  const c = VISUAL_CONFIG.narrative.combatFlash;
+  const phase = ((nowMs % c.periodMs) / c.periodMs) * 2 * Math.PI;
+  const wave = (Math.cos(phase) + 1) / 2; // 0..1
+  const alpha = c.minAlpha + (1 - c.minAlpha) * wave;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = c.color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, c.radiusPx, 0, 2 * Math.PI);
+  ctx.stroke();
+  ctx.restore();
+}
+
 /** Нарисовать статичный слой: рёбра графа + узлы-локации с именами. */
 function drawStatic(ctx: CanvasRenderingContext2D, w: number, h: number): void {
   const cfg = VISUAL_CONFIG;
@@ -369,19 +443,39 @@ const tooltipStyleBase: CSSProperties = {
   whiteSpace: 'nowrap',
   transform: 'translate(8px, 8px)',
 };
+// Кнопка «следить» (пример армейской панели: приглушённо, без неона).
+const followBtnStyle: CSSProperties = {
+  position: 'absolute',
+  top: '0.4rem',
+  right: '0.5rem',
+  background: '#1b1815',
+  border: '1px solid #2a2621',
+  color: '#c8bfae',
+  font: '11px ui-monospace, monospace',
+  padding: '2px 8px',
+  cursor: 'pointer',
+};
+// Радио-тост: моноширинная плашка у узла говорящего (штабной эфир, приглушённо).
+const toastStyleBase: CSSProperties = {
+  position: 'absolute',
+  pointerEvents: 'none',
+  background: VISUAL_CONFIG.narrative.toast.bg,
+  border: `1px solid ${VISUAL_CONFIG.narrative.toast.border}`,
+  color: VISUAL_CONFIG.narrative.toast.text,
+  font: '11px/1.35 ui-monospace, monospace',
+  padding: '2px 6px',
+  maxWidth: `${VISUAL_CONFIG.narrative.toast.maxWidthPx}px`,
+  transform: 'translate(-50%, 0)',
+  whiteSpace: 'normal',
+  wordBreak: 'break-word',
+  boxShadow: '0 1px 4px #000a',
+};
+const toastSpeakerStyle: CSSProperties = { color: VISUAL_CONFIG.narrative.toast.speaker };
 
 /** Внутриигровое время суток из тика (1 тик = 1 минута, TICKS_PER_DAY=1440). */
 function clock(tick: number): string {
   const m = tick % 1440;
   return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
-}
-
-/** Тултип-подпись сущности: вид + текущая задача (полное — в инспекторе 4.5). */
-function tooltipText(e: EntityView): string {
-  const kind = KIND_LABEL[e.kind] ?? e.kind;
-  if (e.kind === 'corpse') return `${kind}`;
-  const task = e.task !== null ? TASK_LABEL[e.task] : undefined;
-  return task ? `${kind} · ${task}` : kind;
 }
 
 /**
@@ -399,12 +493,19 @@ export default function MapCanvas(): ReactElement {
   const displayRef = useRef<Map<number, Point>>(new Map());
   const candidatesRef = useRef<HitCandidate[]>([]);
   const sizeRef = useRef<{ w: number; h: number }>({ w: 0, h: 0 });
+  // Сдвиг «камеры» слежения (презентация, закон №8) — вне React, читается в rAF/render.
+  const cameraRef = useRef<Point>({ x: 0, y: 0 });
+  const toastQueueRef = useRef<ToastQueue>(EMPTY_TOAST_QUEUE);
 
   const [tooltip, setTooltip] = useState<{ x: number; y: number; text: string } | null>(null);
+  // Видимые радио-тосты (wall-clock очередь) — реактивно, чтобы плашки появлялись/гасли.
+  const [toasts, setToasts] = useState<readonly Toast[]>([]);
 
   // HUD-поля (реактивно).
   const view = useUiStore((s) => s.view);
   const selectedEid = useUiStore((s) => s.selectedEid);
+  const following = useUiStore((s) => s.following);
+  const names = useUiStore((s) => s.names);
 
   // ── Замер размера + статичный слой (перерисовка только при ресайзе) ─────────
   useEffect(() => {
@@ -465,13 +566,42 @@ export default function MapCanvas(): ReactElement {
       const st = useUiStore.getState();
       const v = st.view;
       const sel = st.selectedEid;
+      const selNum = sel === null ? null : (sel as unknown as number);
+      const following = st.following;
       const cands: HitCandidate[] = [];
+
       if (v !== null) {
         const placements = computePlacements(v, w, h, trackerRef.current);
         // Прунинг презентационных карт: держим только присутствующие eid.
         const present = new Set(placements.map((p) => p.eid));
         for (const key of displayRef.current.keys()) if (!present.has(key)) displayRef.current.delete(key);
         for (const key of trackerRef.current.keys()) if (!present.has(key)) trackerRef.current.delete(key);
+
+        // ── СЛЕЖЕНИЕ: центрирующий сдвиг «камеры» к выбранной сущности (закон №8:
+        //    двигает лишь ВИД). Цель берём из прошлого display выбранной (плавно),
+        //    иначе — из целевой позиции этого кадра. Не следим — сдвиг гаснет к 0.
+        let desiredCam: Point = { x: 0, y: 0 };
+        if (following && selNum !== null) {
+          const selP = placements.find((p) => p.eid === selNum);
+          if (selP !== undefined) {
+            const at = displayRef.current.get(selNum) ?? selP.target;
+            desiredCam = followOffset(at, { x: w / 2, y: h / 2 });
+          }
+        }
+        const prevCam = cameraRef.current;
+        const cam: Point = {
+          x: prevCam.x + (desiredCam.x - prevCam.x) * CAM_SMOOTH,
+          y: prevCam.y + (desiredCam.y - prevCam.y) * CAM_SMOOTH,
+        };
+        cameraRef.current = cam;
+        const panning = cam.x !== 0 || cam.y !== 0;
+        // Статичный граф панорамируем ДЁШЕВО через CSS-transform (без перерисовки слоя).
+        if (staticRef.current !== null) {
+          staticRef.current.style.transform = panning ? `translate(${cam.x}px, ${cam.y}px)` : '';
+        }
+        // Весь динамичный слой (глифы+оверлеи) под тем же сдвигом. Не следим (cam=0) —
+        // translate НЕ трогаем (сохраняем поведение слоя без камеры).
+        if (panning) ctx.translate(cam.x, cam.y);
 
         for (const p of placements) {
           // rAF-догон отрисованной позиции к целевой (плавность между снапшотами).
@@ -485,10 +615,25 @@ export default function MapCanvas(): ReactElement {
                 };
           displayRef.current.set(p.eid, disp);
           const drawn: Placement = { ...p, target: disp };
-          const isSel = sel !== null && (sel as unknown as number) === p.eid;
+          const isSel = selNum !== null && selNum === p.eid;
           drawGlyph(ctx, drawn, nowMs, isSel);
           const glyph = glyphForKind(VISUAL_CONFIG, p.kind);
-          cands.push({ eid: p.eid, x: disp.x, y: disp.y, r: glyph.sizePx / 2 + 4 });
+          // Хит-кандидаты — в ЭКРАННЫХ координатах (с учётом сдвига камеры).
+          cands.push({ eid: p.eid, x: disp.x + cam.x, y: disp.y + cam.y, r: glyph.sizePx / 2 + 4 });
+        }
+
+        // ── НАРРАТИВНЫЕ ОВЕРЛЕИ из окна лога (презентация, чистое чтение) ─────────
+        const tick = v.tick as unknown as number;
+        const locOf = (eid: number): number | null => {
+          const e = v.entities.find((x) => (x.eid as unknown as number) === eid);
+          return e === undefined ? null : (e.loc as unknown as number);
+        };
+        for (const m of collectDeathMarkers(st.log, tick, TICKS_PER_DAY, locOf)) {
+          drawDeathMarker(ctx, m, w, h);
+        }
+        const flashTicks = VISUAL_CONFIG.narrative.combatFlash.flashTicks;
+        for (const f of collectCombatFlashes(st.log, tick, flashTicks)) {
+          drawCombatFlash(ctx, f, w, h, nowMs);
         }
       }
       candidatesRef.current = cands;
@@ -497,6 +642,32 @@ export default function MapCanvas(): ReactElement {
 
     let rafId = requestAnimationFrameSafe(frame);
     return () => cancelAnimationFrameSafe(rafId);
+  }, []);
+
+  // ── РАДИО-ТОСТ: очередь на РЕАЛЬНОМ времени (wall-clock, презентация, закон №8) ──
+  // Тик очереди — на ИНТЕРВАЛЕ (плашки живут секунды — 60 FPS ни к чему; и не мешаем
+  // rAF-слою рендера): втягивает НОВЫЕ radio/message из лога (id-водомер), запускает
+  // 3-сек таймеры без наложения, снимает истёкшие. Стартовый водомер = max id текущего
+  // лога → бэклог НЕ переигрывается, всплывают лишь новые сообщения после монтажа.
+  useEffect(() => {
+    const cfg = VISUAL_CONFIG.narrative.toast;
+    toastQueueRef.current = { items: [], lastId: maxEventId(useUiStore.getState().log) };
+
+    const tick = (): void => {
+      const st = useUiStore.getState();
+      const now = nowMsSafe();
+      let q = toastQueueRef.current;
+      const incoming = buildRadioToasts(st.log, st.names, q.lastId);
+      if (incoming.length > 0) q = enqueueToasts(q, incoming);
+      q = stepToastQueue(q, now, { durationMs: cfg.durationMs, maxVisible: cfg.maxVisible });
+      toastQueueRef.current = q;
+      const vis = visibleToasts(q);
+      // Обновляем React-состояние только при СМЕНЕ набора видимых id (иначе лишний ре-рендер).
+      setToasts((prev) => (sameToastIds(prev, vis) ? prev : vis));
+    };
+    if (typeof setInterval !== 'function') return;
+    const id = setInterval(tick, TOAST_TICK_MS);
+    return () => clearInterval(id);
   }, []);
 
   // ── Взаимодействие: клик → inspect, наведение → тултип ──────────────────────
@@ -524,13 +695,20 @@ export default function MapCanvas(): ReactElement {
       if (tooltip !== null) setTooltip(null);
       return;
     }
-    const v = useUiStore.getState().view;
-    const e = v?.entities.find((x) => (x.eid as unknown as number) === eid);
+    const st = useUiStore.getState();
+    const e = st.view?.entities.find((x) => (x.eid as unknown as number) === eid);
     if (e === undefined) return;
-    setTooltip({ x: pt.x, y: pt.y, text: tooltipText(e) });
+    setTooltip({ x: pt.x, y: pt.y, text: tooltipLabel(e, st.names, KIND_LABEL, TASK_LABEL) });
   };
 
   const onLeave = (): void => setTooltip(null);
+
+  // Тумблер слежения (закон №8: только команда презентации setFollowing, не воркеру).
+  const onToggleFollow = (): void => {
+    const st = useUiStore.getState();
+    if (st.selectedEid === null) return;
+    st.setFollowing(!st.following);
+  };
 
   // HUD-значения.
   const day = view?.day ?? 0;
@@ -558,13 +736,79 @@ export default function MapCanvas(): ReactElement {
         <div>
           население {total} (люди {pop.humans} · звери {pop.animals} · трупы {pop.corpses})
         </div>
-        {selectedEid !== null ? <div>слежу: #{selectedEid as unknown as number}</div> : null}
+        {selectedEid !== null ? (
+          <div>
+            выбран #{selectedEid as unknown as number}
+            {following ? ' · ведём' : ''}
+          </div>
+        ) : null}
       </div>
+
+      {/* Режим слежения: клик по сущности выбирает её, кнопка ведёт камеру (закон №8). */}
+      <button
+        type="button"
+        style={{
+          ...followBtnStyle,
+          color: following ? '#a9b56b' : selectedEid !== null ? '#c8bfae' : '#5f5a4e',
+          borderColor: following ? '#4a5a2e' : '#2a2621',
+          cursor: selectedEid !== null ? 'pointer' : 'default',
+        }}
+        onClick={onToggleFollow}
+        disabled={selectedEid === null}
+        data-testid="map-follow"
+        aria-pressed={following}
+      >
+        {following ? '● слежу' : '○ следить'}
+      </button>
+
+      {/* Радио-тосты: последние озвучки у узла говорящего, 3 сек, стопкой без наложения. */}
+      {toasts.map((t, i) => {
+        const anchor = toastAnchor(t, sizeRef.current, cameraRef.current, i);
+        if (anchor === null) return null;
+        return (
+          <div
+            key={t.id}
+            style={{ ...toastStyleBase, left: anchor.x, top: anchor.y }}
+            data-testid="map-toast"
+          >
+            <span style={toastSpeakerStyle}>{nameForToast(names, t.speakerEid)}</span>
+            <span>: {t.text}</span>
+          </div>
+        );
+      })}
+
       {tooltip !== null ? (
         <div style={{ ...tooltipStyleBase, left: tooltip.x, top: tooltip.y }}>{tooltip.text}</div>
       ) : null}
     </div>
   );
+}
+
+/** Экранный якорь тоста: узел говорящего + сдвиг камеры, со стопкой по индексу i. */
+function toastAnchor(
+  t: Toast,
+  size: { w: number; h: number },
+  cam: Point,
+  i: number,
+): Point | null {
+  const cfg = VISUAL_CONFIG.narrative.toast;
+  const { w, h } = size;
+  if (w === 0) return null;
+  const stackDy = i * (22 + cfg.gapPx); // вертикальная стопка (без наложения плашек)
+  if (t.loc === null) {
+    return { x: w / 2, y: cfg.offsetPx + stackDy };
+  }
+  const p = nodePx(t.loc, w, h);
+  if (p === null) return { x: w / 2, y: cfg.offsetPx + stackDy };
+  return { x: p.x + cam.x, y: p.y + cam.y - cfg.offsetPx - stackDy };
+}
+
+/** Имя говорящего для плашки тоста (кличка → «Имя Фамилия» → `#eid`, D-081). */
+function nameForToast(names: Readonly<Record<number, EntityName>>, eid: number): string {
+  const n = names[eid];
+  if (n === undefined) return `#${eid}`;
+  if (n.nickname.length > 0) return n.nickname;
+  return `${n.first} ${n.last}`.trim();
 }
 
 /**
@@ -578,6 +822,23 @@ function safeGetContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D | n
   } catch {
     return null;
   }
+}
+
+/**
+ * Wall-clock ms для очереди тостов (презентация, закон №8: как rAF-время, НЕ время
+ * мира). Использует `performance.now`/`Date.now` — это UI-таймер плашек, а НЕ RNG/тик
+ * симуляции (запрет Date.now касается ЯДРА, не наблюдателя).
+ */
+function nowMsSafe(): number {
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') return performance.now();
+  return Date.now();
+}
+
+/** Совпадают ли наборы видимых тостов по id (чтобы не плодить лишние ре-рендеры). */
+function sameToastIds(a: readonly Toast[], b: readonly Toast[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i]!.id !== b[i]!.id) return false;
+  return true;
 }
 
 // ── rAF-обёртки с фолбэком (jsdom/тесты без rAF) ─────────────────────────────

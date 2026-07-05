@@ -31,3 +31,20 @@ export {
 } from './map/visual-config';
 export type { VisualConfig } from './map/visual-config';
 export { layoutToPixels, lerpPoint, edgeProgress, clusterOffset, hitTest } from './map/geometry';
+
+// Нарративный слой карты (задача 4.7): ЧИСТАЯ логика оверлеев (череп/вспышка/тост/
+// слежение/тултип) — тестируема без DOM. Отрисовка — в MapCanvas; стили — в visual-config.
+export {
+  skullAlpha,
+  collectDeathMarkers,
+  collectCombatFlashes,
+  buildRadioToasts,
+  enqueueToasts,
+  stepToastQueue,
+  visibleToasts,
+  maxEventId,
+  followOffset,
+  tooltipLabel,
+  EMPTY_TOAST_QUEUE,
+} from './map/overlays';
+export type { DeathMarker, CombatFlash, Toast, ToastQueue } from './map/overlays';

@@ -28,6 +28,11 @@
     "corpseAlpha": 0.4,
     "sleepGlyph": "zzz"
   },
+  "narrative": {
+    "skull": { "glyph": "☠", "color": "#c6b89a", "sizePx": 12, "offsetPx": 11, "countColor": "#b5473a" },
+    "combatFlash": { "color": "#c2783a", "radiusPx": 16, "periodMs": 380, "minAlpha": 0.2, "flashTicks": 45 },
+    "toast": { "bg": "#1b1815", "border": "#3a3226", "text": "#c8bfae", "speaker": "#a9b56b", "durationMs": 3000, "maxVisible": 3, "maxWidthPx": 210, "offsetPx": 14, "gapPx": 4 }
+  },
   "layout": {
     "0": { "x": 0.08, "y": 0.86 },
     "1": { "x": 0.24, "y": 0.72 },

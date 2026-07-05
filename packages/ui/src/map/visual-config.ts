@@ -92,12 +92,54 @@ export interface NeutralColors {
   readonly settlement: string;
 }
 
+/**
+ * Стили НАРРАТИВНОГО СЛОЯ карты (задача 4.7, закон №10): череп места смерти, вспышка
+ * боя, радио-тост. Только ДАННЫЕ (цвета/пиксели/периоды/пороги) — логика оверлеев
+ * живёт в `overlays.ts` (чистая), отрисовка — в `MapCanvas`. Пороги времени: `flashTicks`
+ * — ИГРОВЫЕ тики жизни вспышки боя; `durationMs` — РЕАЛЬНЫЕ мс жизни тоста (wall-clock).
+ */
+export interface NarrativeVisual {
+  /** Череп места смерти (символ/цвет/размер + вертикальный сдвиг над узлом). */
+  readonly skull: {
+    readonly glyph: string;
+    readonly color: string;
+    readonly sizePx: number;
+    readonly offsetPx: number;
+    /** Цвет счётчика стопки смертей («×N»). */
+    readonly countColor: string;
+  };
+  /** Вспышка локации боя (цвет/радиус кольца + пульсация + окно жизни в ИГРОВЫХ тиках). */
+  readonly combatFlash: {
+    readonly color: string;
+    readonly radiusPx: number;
+    readonly periodMs: number;
+    readonly minAlpha: number;
+    /** Сколько ИГРОВЫХ тиков вспышка «горит» после `encounter/started`. */
+    readonly flashTicks: number;
+  };
+  /** Радио-тост (плашка у узла говорящего): цвета + окно жизни в РЕАЛЬНЫХ мс. */
+  readonly toast: {
+    readonly bg: string;
+    readonly border: string;
+    readonly text: string;
+    readonly speaker: string;
+    /** Реальные мс жизни одной плашки (wall-clock, презентация). */
+    readonly durationMs: number;
+    /** Сколько плашек показываем одновременно (стопка без наложения). */
+    readonly maxVisible: number;
+    readonly maxWidthPx: number;
+    readonly offsetPx: number;
+    readonly gapPx: number;
+  };
+}
+
 /** Корневая форма visual-config.json. */
 export interface VisualConfig {
   readonly kinds: Readonly<Record<string, KindVisual>>;
   readonly factions: Readonly<Record<string, FactionVisual>>;
   readonly neutralColors: NeutralColors;
   readonly modifiers: Modifiers;
+  readonly narrative: NarrativeVisual;
   /** Ключ — строковый id локации ("0".."N-1") → нормированная позиция. */
   readonly layout: Readonly<Record<string, NodeLayout>>;
   /** Рёбра графа для отрисовки, пары id локаций (зеркало топологии map.json). */
