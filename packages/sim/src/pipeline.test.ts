@@ -16,6 +16,8 @@ import {
   PHASE1_SYSTEMS,
   registerPhase2Systems,
   PHASE2_SYSTEMS,
+  registerPhase3Systems,
+  PHASE3_SYSTEMS,
 } from './pipeline';
 
 /** Индекс системы по имени в порядке регистрации; -1, если не зарегистрирована. */
@@ -339,5 +341,200 @@ describe('инвариант порядка Фазы 2 ловит переста
     }
     // Как минимум несколько соседних пар — реальные стыки (тест не холостой).
     expect(jointBreakingSwapsCaught).toBeGreaterThanOrEqual(3);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ИНВАРИАНТ ПОРЯДКА ФАЗЫ 3 (КАПСТОУН 3.7, D-074). Конвейер расширен до 20 систем:
+// канон Фазы 2 (17, D-064) + нарративный блок Radio→Rumors→Chronicle, вставленный
+// ПОСЛЕ MemoryDecay и ДО Death. Порядок обязан СОХРАНИТЬ все стыки Фазы 1+2 и
+// удовлетворить канон нарративного блока (Death остаётся ПОСЛЕДНЕЙ). Тест — по
+// ДАННЫМ массива PHASE3_SYSTEMS (порядок массива = порядок регистрации = исполнения).
+// ═════════════════════════════════════════════════════════════════════════════
+describe('registerPhase3Systems: сборка конвейера Фазы 3 (D-074)', () => {
+  const scheduler = createScheduler();
+  registerPhase3Systems(scheduler);
+  const registered = scheduler.systems();
+  const names = registered.map((s) => s.name);
+
+  it('регистрирует ровно 20 систем Фазы 3 в каноническом порядке', () => {
+    const expected = [
+      'Weather',
+      'ArtifactSpawn',
+      'Needs',
+      'Perception',
+      'RobberyMemory',
+      'TaskSelection',
+      'Movement',
+      'TaskEffects',
+      'Trade',
+      'ArtifactSearch',
+      'Encounters',
+      'Animals',
+      'Economy',
+      'Export',
+      'PopulationInflux',
+      'MemoryDecay',
+      'Radio',
+      'Rumors',
+      'Chronicle',
+      'Death',
+    ];
+    expect(names).toEqual(expected);
+    expect(registered.length).toBe(20);
+    // Список данными (PHASE3_SYSTEMS) и фактическая регистрация совпадают.
+    expect(PHASE3_SYSTEMS.map((s) => s.name)).toEqual(expected);
+  });
+
+  it('СОХРАНЯЕТ все стыки причинности Фазы 1+2 (D-032/D-064) в расширенном конвейере', () => {
+    const idx = (name: string): number => {
+      const i = indexByName(names, name);
+      expect(i, `система ${name} должна быть зарегистрирована`).toBeGreaterThanOrEqual(0);
+      return i;
+    };
+    // Фаза 1 (8 стыков):
+    expect(idx('Needs')).toBeLessThan(idx('Death'));
+    expect(idx('Perception')).toBeLessThan(idx('TaskSelection'));
+    expect(idx('Perception')).toBeLessThan(idx('Encounters'));
+    expect(idx('Perception')).toBeLessThan(idx('Animals'));
+    expect(idx('TaskSelection')).toBeLessThan(idx('Movement'));
+    expect(idx('Encounters')).toBeLessThan(idx('Death'));
+    expect(idx('Movement')).toBeLessThan(idx('TaskEffects'));
+    expect(idx('Movement')).toBeLessThan(idx('Animals'));
+    // Фаза 2 (новые стыки D-064):
+    expect(idx('ArtifactSpawn')).toBeLessThan(idx('TaskSelection'));
+    expect(idx('TaskSelection')).toBeLessThan(idx('ArtifactSearch'));
+    expect(idx('RobberyMemory')).toBeLessThan(idx('TaskSelection'));
+    expect(idx('Movement')).toBeLessThan(idx('Trade'));
+    expect(idx('Movement')).toBeLessThan(idx('ArtifactSearch'));
+    expect(idx('Movement')).toBeLessThan(idx('Economy'));
+    expect(idx('Economy')).toBeLessThan(idx('Export'));
+  });
+
+  it('НАРРАТИВНЫЙ БЛОК на месте: MemoryDecay < Radio < Rumors < Chronicle < Death (D-074)', () => {
+    const idx = (name: string): number => indexByName(names, name);
+    // Нарратив ПОСЛЕ обслуживания сознания (свежий слух не под decay того же тика).
+    expect(idx('MemoryDecay')).toBeLessThan(idx('Radio'));
+    // Канонический нарративный поток: эфир → молва → летопись.
+    expect(idx('Radio')).toBeLessThan(idx('Rumors'));
+    expect(idx('Rumors')).toBeLessThan(idx('Chronicle'));
+    // ВЕСЬ нарративный блок ДО Death (эфир/молва видят павших-этим-тиком как живых свидетелей;
+    // Death остаётся последней, D-032).
+    expect(idx('Radio')).toBeLessThan(idx('Death'));
+    expect(idx('Rumors')).toBeLessThan(idx('Death'));
+    expect(idx('Chronicle')).toBeLessThan(idx('Death'));
+  });
+
+  it('Weather — первой (фон среды), Death — последней (снимает Alive/Task с добитых)', () => {
+    expect(indexByName(names, 'Weather')).toBe(0);
+    expect(indexByName(names, 'Death')).toBe(names.length - 1);
+  });
+
+  it('конвейер Фазы 3 — надмножество Фазы 2 (все 17 систем Фазы 2 присутствуют)', () => {
+    for (const s of PHASE2_SYSTEMS) {
+      expect(names).toContain(s.name);
+    }
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// НЕГАТИВНЫЙ КОНТУР ФАЗЫ 3 (D-074). Позитивные it-блоки сверяют индексы КАНОНА;
+// здесь доказываем, что набор стыков-данных реально ЛОВИТ перестановку — в т.ч.
+// перестановку внутри нарративного блока или вынос его за Death. Стыки — ВСЕ Фазы
+// 1+2 + канон нарративного блока, как ДАННЫЕ; тест стоит на PHASE3_SYSTEMS.
+// ═════════════════════════════════════════════════════════════════════════════
+const PHASE3_CAUSALITY_JOINTS: ReadonlyArray<readonly [producer: string, consumer: string]> = [
+  // — сохранённые стыки Фазы 1 —
+  ['Needs', 'Death'],
+  ['Perception', 'TaskSelection'],
+  ['Perception', 'Encounters'],
+  ['Perception', 'Animals'],
+  ['TaskSelection', 'Movement'],
+  ['Encounters', 'Death'],
+  ['Movement', 'TaskEffects'],
+  ['Movement', 'Animals'],
+  // — сохранённые стыки Фазы 2 (D-064) —
+  ['ArtifactSpawn', 'TaskSelection'],
+  ['TaskSelection', 'ArtifactSearch'],
+  ['ArtifactSpawn', 'ArtifactSearch'],
+  ['RobberyMemory', 'TaskSelection'],
+  ['Movement', 'Trade'],
+  ['Movement', 'ArtifactSearch'],
+  ['Movement', 'Economy'],
+  ['Economy', 'Export'],
+  // — нарративный блок Фазы 3 (D-074) —
+  ['MemoryDecay', 'Radio'], // нарратив ПОСЛЕ обслуживания сознания
+  ['Radio', 'Rumors'], // эфир → молва
+  ['Rumors', 'Chronicle'], // молва → летопись
+  ['Radio', 'Death'], // весь блок ДО Death (свидетели живы)
+  ['Rumors', 'Death'],
+  ['Chronicle', 'Death'],
+];
+
+/** Все ли стыки Фазы 3 соблюдены (producer раньше consumer) в данном порядке. */
+function phase3CausalityHolds(order: readonly string[]): boolean {
+  return PHASE3_CAUSALITY_JOINTS.every(([producer, consumer]) => {
+    const p = order.indexOf(producer);
+    const c = order.indexOf(consumer);
+    return p >= 0 && c >= 0 && p < c;
+  });
+}
+
+/** Копия порядка с переставленными местами двух систем (по именам). */
+function swap3(order: readonly string[], a: string, b: string): string[] {
+  return order.map((n) => (n === a ? b : n === b ? a : n));
+}
+
+describe('инвариант порядка Фазы 3 ловит перестановки (негативный контур D-074)', () => {
+  const canonical = PHASE3_SYSTEMS.map((s) => s.name);
+
+  it('валидатор пропускает КАНОНИЧЕСКИЙ порядок Фазы 3 (20 систем)', () => {
+    expect(phase3CausalityHolds(canonical)).toBe(true);
+  });
+
+  it('РЕАЛЬНАЯ регистрация Фазы 3 удовлетворяет ВСЕ стыки разом', () => {
+    const scheduler = createScheduler();
+    registerPhase3Systems(scheduler);
+    const actual = scheduler.systems().map((s) => s.name);
+    expect(phase3CausalityHolds(actual)).toBe(true);
+    expect(actual).toEqual(canonical);
+  });
+
+  it('Chronicle ПОСЛЕ Death — валидатор ЛОВИТ (летопись бы не увидела павших свидетелей)', () => {
+    expect(phase3CausalityHolds(swap3(canonical, 'Chronicle', 'Death'))).toBe(false);
+  });
+
+  it('Radio и Rumors местами — валидатор ЛОВИТ (нарушен канон эфир→молва)', () => {
+    expect(phase3CausalityHolds(swap3(canonical, 'Radio', 'Rumors'))).toBe(false);
+  });
+
+  it('Rumors и Chronicle местами — валидатор ЛОВИТ (нарушен канон молва→летопись)', () => {
+    expect(phase3CausalityHolds(swap3(canonical, 'Rumors', 'Chronicle'))).toBe(false);
+  });
+
+  it('MemoryDecay и Radio местами — валидатор ЛОВИТ (нарратив залез перед обслуживанием памяти)', () => {
+    expect(phase3CausalityHolds(swap3(canonical, 'MemoryDecay', 'Radio'))).toBe(false);
+  });
+
+  it('Death в самое начало — валидатор ЛОВИТ (рвёт разом Needs/Encounters/нарратив < Death)', () => {
+    const broken = canonical.filter((n) => n !== 'Death');
+    broken.unshift('Death');
+    expect(phase3CausalityHolds(broken)).toBe(false);
+  });
+
+  it('весь нарративный блок ВЫНЕСЕН перед MemoryDecay — валидатор ЛОВИТ', () => {
+    // Мысленно двигаем Radio/Rumors/Chronicle до MemoryDecay: рвётся MemoryDecay<Radio.
+    const withoutNarrative = canonical.filter(
+      (n) => n !== 'Radio' && n !== 'Rumors' && n !== 'Chronicle',
+    );
+    const mdIdx = withoutNarrative.indexOf('MemoryDecay');
+    const broken = [
+      ...withoutNarrative.slice(0, mdIdx),
+      'Radio',
+      'Rumors',
+      'Chronicle',
+      ...withoutNarrative.slice(mdIdx),
+    ];
+    expect(phase3CausalityHolds(broken)).toBe(false);
   });
 });

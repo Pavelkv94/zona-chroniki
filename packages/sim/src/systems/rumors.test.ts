@@ -33,7 +33,7 @@ import {
   getMemory,
 } from './memory';
 import { Rumors } from './rumors';
-import { PHASE1_SYSTEMS, PHASE2_SYSTEMS } from '../pipeline';
+import { PHASE1_SYSTEMS, PHASE2_SYSTEMS, PHASE3_SYSTEMS } from '../pipeline';
 import { parseTemplateId, renderMessage, makeTemplateId } from '../narrative/render';
 import { getTemplatePool } from '../data/index';
 import {
@@ -750,12 +750,15 @@ describe('Rumors: искажённый масштаб ВИДЕН в plain-стр
   });
 });
 
-describe('Rumors: голден-гвард — система ВНЕ конвейера (sim:100days=fd0bec10 не двигается)', () => {
-  it('Rumors не зарегистрирована ни в Фазе 1, ни в Фазе 2 (иначе поехали бы голдены)', () => {
+describe('Rumors: проводка в конвейер — ТОЛЬКО Фаза 3 (D-074), не Фаза 1/2', () => {
+  it('Rumors подключена в PHASE3_SYSTEMS, но НЕ в Фазе 1/2 (нарратив — слой Фазы 3)', () => {
+    // Задача 3.7 (D-074) включила молву в ЖИВОЙ конвейер — но только в Фазе 3. Ранние
+    // конвейеры (Ф1/Ф2) её не знают (иначе поехали бы их физические голдены). Тест
+    // фиксирует ИМЕННО эту проводку: Rumors ∈ Phase3, Rumors ∉ Phase1/Phase2.
+    expect(PHASE3_SYSTEMS as readonly unknown[]).toContain(Rumors);
     expect(PHASE1_SYSTEMS as readonly unknown[]).not.toContain(Rumors);
     expect(PHASE2_SYSTEMS as readonly unknown[]).not.toContain(Rumors);
-    // Ни один зарегистрированный шаг не эмитит radio/relayed — молва пока изолирована (3.7).
-    const names = [...PHASE1_SYSTEMS, ...PHASE2_SYSTEMS].map((s) => s.name);
-    expect(names).not.toContain('Rumors');
+    const earlyNames = [...PHASE1_SYSTEMS, ...PHASE2_SYSTEMS].map((s) => s.name);
+    expect(earlyNames).not.toContain('Rumors');
   });
 });

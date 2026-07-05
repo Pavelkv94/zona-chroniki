@@ -113,7 +113,7 @@ describe('RobberyMemory: живая жертва запоминает грабё
     expect(getAvoids(w.resources, robber)).toEqual([]);
   });
 
-  it('повторный грабёж дожимает отношение к −1 (кламп) и копит память', () => {
+  it('повторный грабёж дожимает отношение к −1 (кламп) и ОСВЕЖАЕТ одну память (консолидация, D-075)', () => {
     const w = createSimWorld(2 as never);
     const victim = placeHuman(w);
     const robber = placeHuman(w, 'bandits');
@@ -122,8 +122,12 @@ describe('RobberyMemory: живая жертва запоминает грабё
     commitRobbery(w, 20, victim, robber);
     RobberyMemory.update(ctxAt(w, 21));
 
-    expect(getMemory(w.resources, victim)).toHaveLength(2);
-    // −0.6 −0.6 = −1.2 → кламп к −1.
+    // Память «меня грабил X» — ОДИН факт (kind:'robbed', subject:e:robber, firsthand),
+    // освежённый повтором (addMemory консолидирует по факту, D-075), а не две копии.
+    const mem = getMemory(w.resources, victim);
+    expect(mem).toHaveLength(1);
+    expect(mem[0]!.tick).toBe(20); // освежён на свежайший грабёж
+    // Отношение же КОПИТСЯ отдельно (adjustRelation): −0.6 −0.6 = −1.2 → кламп к −1.
     expect(getRelation(w.resources, victim, entitySubject(robber))).toBeCloseTo(-1, 10);
   });
 });

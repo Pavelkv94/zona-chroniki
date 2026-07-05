@@ -69,12 +69,14 @@ describe('addMemory: форма MemoryRecord + дефолты + кламп', () 
 
   it('salience клампится в [0..1]; isFirsthand=false для слуха', () => {
     const w = createSimWorld(2 as Seed);
+    // Два РАЗНЫХ факта (разные субъекты) — консолидация не сливает; проверяем кламп каждого.
     addMemory(w.resources, NPC, { kind: 'seen', subject: 'f:bandits', tick: 1, causeEvent: 0, salience: 9, isFirsthand: false });
-    addMemory(w.resources, NPC, { kind: 'seen', subject: 'f:bandits', tick: 2, causeEvent: 0, salience: -3 });
-    const mem = getMemory(w.resources, NPC);
-    expect(mem[0]!.salience).toBe(1); // tick=1, clamp сверху
-    expect(mem[0]!.isFirsthand).toBe(false);
-    expect(mem[1]!.salience).toBe(0); // tick=2, clamp снизу
+    addMemory(w.resources, NPC, { kind: 'seen', subject: 'f:loners', tick: 2, causeEvent: 0, salience: -3 });
+    const bandits = getMemory(w.resources, NPC).find((r) => r.subject === 'f:bandits')!;
+    const loners = getMemory(w.resources, NPC).find((r) => r.subject === 'f:loners')!;
+    expect(bandits.salience).toBe(1); // clamp сверху
+    expect(bandits.isFirsthand).toBe(false); // слух
+    expect(loners.salience).toBe(0); // clamp снизу
   });
 
   it('память сорт. детерминированно независимо от порядка добавления', () => {
@@ -96,6 +98,80 @@ describe('addMemory: форма MemoryRecord + дефолты + кламп', () 
     addMemory(w.resources, NPC, { kind: 'b', subject: 'e:2', tick: 2, causeEvent: 0 });
     expect(before).toHaveLength(1); // старый снимок не вырос
     expect(getMemory(w.resources, NPC)).toHaveLength(2);
+  });
+});
+
+// ── КОНСОЛИДАЦИЯ ПАМЯТИ ПО ФАКТУ (задача 3.8, D-075) ─────────────────────────
+describe('addMemory: консолидация по (kind, subject, isFirsthand) — фикс перф-квадрата 3.7', () => {
+  it('повтор того же факта НЕ аппендит запись — ОСВЕЖАЕТ одну (память не растёт)', () => {
+    const w = createSimWorld(30 as Seed);
+    const subj = entitySubject(9 as EntityId);
+    // Тот же слух (kind:'rumor', тот же субъект, isFirsthand:false) слышен 100 раз.
+    for (let i = 0; i < 100; i++) {
+      addMemory(w.resources, NPC, { kind: 'rumor', subject: subj, tick: 10 + i, causeEvent: 500 + i, salience: 0.3, isFirsthand: false });
+    }
+    const mem = getMemory(w.resources, NPC);
+    expect(mem).toHaveLength(1); // ОДНА запись на факт, а не 100 копий
+  });
+
+  it('слияние берёт MAX salience, MAX tick, свежайший causeEvent (коммутативно)', () => {
+    const w = createSimWorld(31 as Seed);
+    const subj = entitySubject(9 as EntityId);
+    addMemory(w.resources, NPC, { kind: 'rumor', subject: subj, tick: 10, causeEvent: 500, salience: 0.7, isFirsthand: false });
+    addMemory(w.resources, NPC, { kind: 'rumor', subject: subj, tick: 25, causeEvent: 600, salience: 0.4, isFirsthand: false });
+    addMemory(w.resources, NPC, { kind: 'rumor', subject: subj, tick: 15, causeEvent: 550, salience: 0.5, isFirsthand: false });
+    const mem = getMemory(w.resources, NPC);
+    expect(mem).toHaveLength(1);
+    const r = mem[0]!;
+    expect(r.salience).toBe(0.7); // MAX подкрепление усиливает, не ослабляет
+    expect(r.tick).toBe(25); // MAX — самое свежее (освежает возраст против MemoryDecay)
+    expect(r.causeEvent).toBe(600); // причина от записи с бОльшим tick
+  });
+
+  it('слияние ПОРЯДКО-НЕЗАВИСИМО (resume-safe): разный порядок → та же запись', () => {
+    const build = (order: readonly number[]): MemoryRecord => {
+      const w = createSimWorld(32 as Seed);
+      const subj = entitySubject(9 as EntityId);
+      const adds = [
+        { tick: 10, causeEvent: 500, salience: 0.7 },
+        { tick: 25, causeEvent: 600, salience: 0.4 },
+        { tick: 15, causeEvent: 550, salience: 0.5 },
+      ];
+      for (const i of order) addMemory(w.resources, NPC, { kind: 'rumor', subject: subj, isFirsthand: false, ...adds[i]! });
+      return getMemory(w.resources, NPC)[0]!;
+    };
+    expect(build([0, 1, 2])).toEqual(build([2, 1, 0]));
+    expect(build([0, 1, 2])).toEqual(build([1, 2, 0]));
+  });
+
+  it('firsthand и слух о ТОМ ЖЕ факте — РАЗДЕЛЬНЫ (слух не притворяется личным, закон поведения)', () => {
+    const w = createSimWorld(33 as Seed);
+    const subj = entitySubject(9 as EntityId);
+    addMemory(w.resources, NPC, { kind: 'robbed', subject: subj, tick: 10, causeEvent: 500, salience: 1, isFirsthand: true });
+    addMemory(w.resources, NPC, { kind: 'robbed', subject: subj, tick: 12, causeEvent: 510, salience: 0.3, isFirsthand: false });
+    const mem = getMemory(w.resources, NPC);
+    expect(mem).toHaveLength(2); // isFirsthand в ключе ⇒ два раздельных факта
+    expect(mem.find((r) => r.isFirsthand)!.salience).toBe(1);
+    expect(mem.find((r) => !r.isFirsthand)!.salience).toBe(0.3);
+  });
+
+  it('РАЗНЫЕ факты (kind/subject) НЕ сливаются — память хранит все различные факты', () => {
+    const w = createSimWorld(34 as Seed);
+    addMemory(w.resources, NPC, { kind: 'rumor', subject: 'e:9', tick: 10, causeEvent: 1, isFirsthand: false });
+    addMemory(w.resources, NPC, { kind: 'rumor', subject: 'e:8', tick: 10, causeEvent: 2, isFirsthand: false });
+    addMemory(w.resources, NPC, { kind: 'seen', subject: 'e:9', tick: 10, causeEvent: 3, isFirsthand: false });
+    expect(getMemory(w.resources, NPC)).toHaveLength(3); // 3 различных факта
+  });
+
+  it('повторный firsthand-грабёж тем же грабителем — одна ОСВЕЖЁННАЯ запись (RobberyMemory 2.13)', () => {
+    const w = createSimWorld(35 as Seed);
+    const robber = entitySubject(7 as EntityId);
+    addMemory(w.resources, NPC, { kind: 'robbed', subject: robber, tick: 100, causeEvent: 42, salience: 1, isFirsthand: true });
+    addMemory(w.resources, NPC, { kind: 'robbed', subject: robber, tick: 300, causeEvent: 88, salience: 1, isFirsthand: true });
+    const mem = getMemory(w.resources, NPC);
+    expect(mem).toHaveLength(1); // «меня грабил X» — один факт, освежён (tick 300, event 88)
+    expect(mem[0]!.tick).toBe(300);
+    expect(mem[0]!.causeEvent).toBe(88);
   });
 });
 

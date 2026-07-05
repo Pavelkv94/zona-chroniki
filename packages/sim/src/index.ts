@@ -73,6 +73,10 @@ export { registerPhase1Systems, PHASE1_SYSTEMS } from './pipeline';
 // расширяет Фазу 1 семью системами 2.x, сохраняя стыки D-032. Данные-массив
 // PHASE2_SYSTEMS экспонируются для теста инварианта порядка (как PHASE1_SYSTEMS).
 export { registerPhase2Systems, PHASE2_SYSTEMS } from './pipeline';
+// Конвейер Фазы 3 (КАПСТОУН 3.7, D-074): 20 систем — канон Фазы 2 (D-064) +
+// нарративный блок Radio→Rumors→Chronicle перед Death. Данные-массив
+// PHASE3_SYSTEMS экспонируются для теста инварианта порядка (как PHASE2_SYSTEMS).
+export { registerPhase3Systems, PHASE3_SYSTEMS } from './pipeline';
 
 // ── Презентационные справочники (1.12, D-006) ────────────────────────────────
 // Реэкспорт для ЧЕЛОВЕКОЧИТАЕМОГО рендера лога в headless (флаг --log verbose):

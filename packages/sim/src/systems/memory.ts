@@ -61,14 +61,16 @@ export function parseSubject(
 
 // ── Детерминированный порядок памяти (закон №8) ───────────────────────────────
 //
-// Полный порядок по (subject, kind, tick, causeEvent, isFirsthand, salience) — так prune
-// и сериализация воспроизводимы независимо от порядка добавления записей.
+// Полный порядок по (subject, kind, isFirsthand, tick, causeEvent, salience) — так prune
+// и сериализация воспроизводимы независимо от порядка добавления записей. `isFirsthand`
+// поднят перед tick, чтобы соседствовать с КЛЮЧОМ КОНСОЛИДАЦИИ (kind, subject, isFirsthand,
+// см. addMemory) — упорядочивание согласовано с семантикой «один факт = одна запись».
 function compareMemory(a: MemoryRecord, b: MemoryRecord): number {
   if (a.subject !== b.subject) return a.subject < b.subject ? -1 : 1;
   if (a.kind !== b.kind) return a.kind < b.kind ? -1 : 1;
+  if (a.isFirsthand !== b.isFirsthand) return a.isFirsthand ? -1 : 1;
   if (a.tick !== b.tick) return a.tick - b.tick;
   if (a.causeEvent !== b.causeEvent) return a.causeEvent - b.causeEvent;
-  if (a.isFirsthand !== b.isFirsthand) return a.isFirsthand ? -1 : 1;
   return a.salience - b.salience;
 }
 
@@ -87,11 +89,59 @@ export function getMemory(resources: ResourceStore, eid: EntityId): readonly Mem
   return resources.get<readonly MemoryRecord[]>(MEMORY_KEY, eid) ?? [];
 }
 
+// ── КОНСОЛИДАЦИЯ памяти по ФАКТУ (задача 3.8, D-075) ──────────────────────────
+//
+// Запись памяти адресует ФАКТ о мире: `kind` (вид знания) о `subject` (о ком), полученный
+// ЛИЧНО или с чужих слов (`isFirsthand`). NPC держит РОВНО ОДНУ запись на такой факт, а не
+// тысячи копий: повторное подкрепление (тот же слух ещё раз, повторный грабёж тем же
+// грабителем) НЕ аппендит новую запись, а ОСВЕЖАЕТ существующую. Это одновременно:
+//  • СЕМАНТИЧЕСКИ вернее (NPC помнит «банда у Свалки», а не 10 000 раз одно и то же);
+//  • структурно ОГРАНИЧИВАЕТ массив памяти числом РАЗЛИЧНЫХ фактов (мало) — снимает
+//    квадрат `addMemory` (append+sort) на плотном хабе слухов (перф-катастрофа 3.7, D-074).
+//
+// КЛЮЧ КОНСОЛИДАЦИИ — (`kind`, `subject`, `isFirsthand`). `isFirsthand` ВХОДИТ в ключ
+// НАМЕРЕННО: слух (`isFirsthand=false`, слабее и МОЖЕТ БЫТЬ ЛОЖНЫМ) НЕ сливается с личным
+// наблюдением того же факта и не может им притвориться (закон поведения: «isFirsthand=false
+// слабее»). Firsthand-память (RobberyMemory 2.13, `kind:'robbed'`) консолидируется тем же
+// правилом консистентно: повторный грабёж тем же грабителем освежает одну запись «меня
+// грабил X» (отношение/обход двигаются ОТДЕЛЬНО в RobberyMemory и по-прежнему накапливаются).
+//
+// СЛИЯНИЕ (`mergeMemory`) КОММУТАТИВНО и ПОРЯДКО-НЕЗАВИСИМО (закон №8, resume-safe): все три
+// поля берутся max-ом от вклада, поэтому итог не зависит ни от порядка `addMemory`-вызовов,
+// ни от save/load посередине: salience = MAX (подкрепление УСИЛИВАЕТ, не ослабляет), tick =
+// MAX (самое свежее подкрепление — освежает возраст против prune MemoryDecay), causeEvent —
+// от записи с бОльшим tick (свежайшая причина; при равенстве tick — больший causeEvent, тоже
+// max/коммутативно). rng не участвует (закон №2).
+function mergeMemory(a: MemoryRecord, b: MemoryRecord): MemoryRecord {
+  const tick = a.tick >= b.tick ? a.tick : b.tick;
+  const causeEvent =
+    a.tick > b.tick
+      ? a.causeEvent
+      : b.tick > a.tick
+        ? b.causeEvent
+        : a.causeEvent >= b.causeEvent
+          ? a.causeEvent
+          : b.causeEvent;
+  return {
+    kind: a.kind,
+    subject: a.subject,
+    isFirsthand: a.isFirsthand,
+    salience: a.salience >= b.salience ? a.salience : b.salience,
+    tick,
+    causeEvent,
+  };
+}
+
 /**
- * Добавляет запись памяти NPC `eid` НОВЫМ отсортированным массивом (D-035/№8). Поля
+ * Добавляет/ОСВЕЖАЕТ запись памяти NPC `eid` НОВЫМ отсортированным массивом (D-035/№8). Поля
  * `salience`/`isFirsthand` опциональны (по умолчанию `MEMORY_INITIAL_SALIENCE` / `true`);
- * `salience` клампится в [0..1]. Дедуп/слияние однотипных записей — политика ВЫЗЫВАЮЩЕГО
- * (2.12/2.13): хелпер просто добавляет (append + сортировка), не решая за поведение.
+ * `salience` клампится в [0..1].
+ *
+ * КОНСОЛИДАЦИЯ ПО ФАКТУ (D-075): если у NPC уже есть запись с тем же (`kind`, `subject`,
+ * `isFirsthand`), новая НЕ добавляется отдельно — существующая ОСВЕЖАЕТСЯ (`mergeMemory`:
+ * salience/tick — max, causeEvent — свежайшая причина). Так NPC хранит одну обновляемую
+ * память о факте, а не тысячи копий (структурный + семантический фикс перф-квадрата 3.7).
+ * Слияние коммутативно ⇒ детерминизм/resume не зависят от порядка вставок (закон №8).
  */
 export function addMemory(
   resources: ResourceStore,
@@ -105,7 +155,7 @@ export function addMemory(
     readonly isFirsthand?: boolean;
   },
 ): void {
-  const full: MemoryRecord = {
+  const incoming: MemoryRecord = {
     kind: record.kind,
     subject: record.subject,
     salience: clampSalience(record.salience ?? MEMORY_INITIAL_SALIENCE),
@@ -113,7 +163,21 @@ export function addMemory(
     causeEvent: record.causeEvent,
     isFirsthand: record.isFirsthand ?? true,
   };
-  const next = [...getMemory(resources, eid), full];
+  // Консолидация по (kind, subject, isFirsthand): осветить существующий факт ИЛИ добавить
+  // новый. Обход O(m) по ОГРАНИЧЕННОМУ числу различных фактов (после фикса m мал) — суммарно
+  // линейно, без квадрата растущего массива. НОВЫЙ массив (D-035), пересорт (закон №8).
+  const cur = getMemory(resources, eid);
+  const next: MemoryRecord[] = [];
+  let merged = false;
+  for (const r of cur) {
+    if (r.kind === incoming.kind && r.subject === incoming.subject && r.isFirsthand === incoming.isFirsthand) {
+      next.push(mergeMemory(r, incoming));
+      merged = true;
+    } else {
+      next.push(r);
+    }
+  }
+  if (!merged) next.push(incoming);
   next.sort(compareMemory);
   resources.set<readonly MemoryRecord[]>(MEMORY_KEY, eid, next);
 }

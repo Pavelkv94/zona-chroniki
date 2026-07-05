@@ -431,11 +431,13 @@ describe('Personality: голдены-якоря активными assert (D-07
     expect(hashSnapshot(snap)).toBe('481914ae');
   });
 
-  it('день-1 seed42 через тот же конвейер, что cli.test/phase1-gate, = 3c54d141', () => {
-    // Тот же путь, что headless CLI и phase1-gate (createSimWorld → worldgen →
-    // registerPhase2Systems → прогон TICKS_PER_DAY). Литерал совпадает с
-    // GOLDEN_DAY1_SEED42 (phase1-gate) и golden'ом cli.test — согласованность
-    // rng-хвоста Personality закреплена во всех трёх местах одним значением.
+  it('день-1 seed42 на конвейере Фазы 2 (физический базлайн) = 3c54d141', () => {
+    // ЯКОРЬ конвейера Фазы 2 (createSimWorld → worldgen → registerPhase2Systems → прогон
+    // TICKS_PER_DAY): rng-хвост Personality (D-071) закреплён числом 3c54d141. Задача 3.7
+    // (D-074) подключила нарративный блок в конвейер CLI/phase1-gate — их день-1 голден
+    // сдвинулся до f554331d (заполнение лога эфиром/слухами/летописью + fame). Но нарратив
+    // ПОВЕДЕНЧЕСКИ ИНЕРТЕН для физики (пишет fame/memory, дизъюнктные positions/inventory),
+    // поэтому ФИЗИЧЕСКИЙ голден Фазы 2 остаётся 3c54d141 — этот якорь его и фиксирует.
     const world = createSimWorld(42 as Seed);
     worldgen(world);
     const sched = createScheduler();

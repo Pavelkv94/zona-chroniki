@@ -62,6 +62,9 @@ import { Economy } from './systems/economy';
 import { Export } from './systems/export';
 import { PopulationInflux } from './systems/population-influx';
 import { MemoryDecay } from './systems/memory-decay';
+import { Radio } from './systems/radio';
+import { Rumors } from './systems/rumors';
+import { Chronicle } from './systems/chronicle';
 
 /**
  * Канонический порядок систем Фазы 1 (B.1 + вставки). Экспонируется как данные,
@@ -187,6 +190,118 @@ export const PHASE2_SYSTEMS = [
  */
 export function registerPhase2Systems(scheduler: Scheduler): void {
   for (const system of PHASE2_SYSTEMS) {
+    scheduler.register(system);
+  }
+}
+
+/**
+ * ЕДИНЫЙ конвейер ФАЗЫ 3 (КАПСТОУН 3.7, D-074). Расширяет канон Фазы 2 (17 систем, D-064)
+ * НАРРАТИВНЫМ БЛОКОМ из трёх реактивных систем (Radio 3.5/D-070 → Rumors 3.6/D-073 →
+ * Chronicle 3.2/D-068), вставленным ПОЗДНО в тике — ПОСЛЕ всей физики/экономики/сознания
+ * (MemoryDecay), но ДО Death. Итого 20 систем. Порядок массива = порядок регистрации =
+ * порядок исполнения (scheduler.ts, закон №8). Сохраняет ВСЕ 8 стыков Фазы 1 (D-032) и ВСЕ
+ * стыки Фазы 2 (D-064). registerPhase3Systems ТОЛЬКО упорядочивает — логики мира нет (закон №6).
+ *
+ * ── ПОЧЕМУ НАРРАТИВНЫЙ БЛОК ПОЗДНО И ДО Death (D-074) ─────────────────────────
+ * Все три системы — РЕАКТИВЫ на ЗАКОММИЧЕННОЕ прошлое (модель двух фаз D-005): Radio/Chronicle
+ * читают `bus.at(tick−1)`, Rumors — окно `bus.at([T−10..T−1])`. Собственные события ТЕКУЩЕГО
+ * тика ещё НЕ закоммичены, поэтому в пределах тика нарратив НЕ видит вывод соседей этого же
+ * тика (в т.ч. Radio НЕ видит свой radio/message в Rumors этого тика — петли нет). ⇒ позиция
+ * блока в тике НЕ КРИТИЧНА ДЛЯ ПРИЧИННОСТИ его входа (он читает прошлое, не настоящее). Но два
+ * канонических соображения фиксируют место и порядок:
+ *   1. НАРРАТИВ < Death (реальный поведенческий стык). Radio ищет ЖИВОГО Human-свидетеля
+ *      (findSpeaker: Human+Alive+Position в loc), Rumors — ЖИВЫХ слышащих (findHearers). Death
+ *      ПОСЛЕДНЯЯ (D-032) снимает Alive с добитых ЭТИМ тиком. Поставив нарратив ДО Death, мы
+ *      даём эфиру/молве увидеть павших-этим-тиком ещё как ЖИВЫХ очевидцев события прошлого тика
+ *      (свидетель мог погибнуть тиком позже, но об услышанном/увиденном он ещё способен сказать),
+ *      и сохраняем инвариант «Death последняя, никто ниже не работает с только что умершим».
+ *   2. НАРРАТИВ ПОСЛЕ MemoryDecay (канон). Сознание (память/затухание/prune) обслужено ДО того,
+ *      как Rumors ДОПИШЕТ в память слухи этого прохода — свежий слух не попадёт под decay того же
+ *      тика (обслуживание и наполнение не спорят за один проход). Порядок с физикой не критичен
+ *      (нарратив её не читает в этом тике) ⇒ ставим блок последним перед Death, «поздним слоем».
+ *   3. Radio → Rumors → Chronicle (КАНОНИЧЕСКИЙ порядок блока). Причинно между собой они в одном
+ *      тике НЕ связаны (каждая читает закоммиченное прошлое), но канон отражает нарративный поток:
+ *      сначала ЭФИР озвучивает событие (Radio), затем МОЛВА разносит услышанное прошлых тиков
+ *      (Rumors), затем ЛЕТОПИСЬ метит значимое и двигает fame (Chronicle). fame-петля (§10.2):
+ *      Chronicle → incFame субъектам → выше значимость их будущих событий → чаще в эфир/летопись.
+ *      fame читает ТОЛЬКО significance() (Radio/Chronicle) — в физику/восприятие обратной связи
+ *      НЕТ (позиции/perception неизменны), поэтому «оживление» петли двигает лог/резервы, а не мир.
+ *
+ * ── ПОРЯДОК 20 СИСТЕМ (D-074) ────────────────────────────────────────────────
+ *   1..16  — КАНОН ФАЗЫ 2 без изменений (D-064): Weather → ArtifactSpawn → Needs → Perception →
+ *            RobberyMemory → TaskSelection → Movement → TaskEffects → Trade → ArtifactSearch →
+ *            Encounters → Animals → Economy → Export → PopulationInflux → MemoryDecay.
+ *  17. Radio       (every:1)  — эфир: живой свидетель озвучивает значимое событие tick−1 (D-070).
+ *  18. Rumors      (every:10) — молва: слышащие пишут память слуха, болтуны ретранслируют с
+ *                               искажением по окну tick−10..tick−1 (D-073).
+ *  19. Chronicle   (every:1)  — летопись: значимое tick−1 → chronicle/recorded + incFame субъектам,
+ *                               ЗАПУСК fame-петли §10.2 (D-068).
+ *  20. Death       (every:1)  — ПОСЛЕДНЯЯ (D-032): снимает Alive/Task/Needs с добитых этим тиком.
+ *
+ * ── ИНВАРИАНТ МАССЫ (закон №3, D-045) ────────────────────────────────────────
+ * Нарратив массу НЕ творит: `chronicle/recorded`/`radio/message`/`radio/relayed` — НЕ леджер-типы
+ * (item/*), `incFame` двигает ключ `'fame'`, `addMemory` — ключ `'memory'` (оба дизъюнктны
+ * money/inventory). EconomyInvariant (worldTotals суммирует только money+inventory) их не видит ⇒
+ * держится ВЕСЬ прогон (runHeadless сверяет массу с леджером раз в игровой день, не бросает).
+ *
+ * ── ПУСТОЙ МИР (D-064/D-074) ─────────────────────────────────────────────────
+ * Нет сущностей ⇒ нет закоммиченных значимых событий ⇒ все три нарративные системы — no-op
+ * (Radio/Chronicle: пустое окно; Rumors: нет слышащих). Голден пустого снапшота 481914ae цел.
+ *
+ * Пример:
+ * ```ts
+ * const world = createSimWorld(42 as Seed);
+ * worldgen(world);
+ * const scheduler = createScheduler();
+ * registerPhase3Systems(scheduler);
+ * scheduler.run(world, TICKS_PER_DAY); // полный живой мир Фазы 3 (физика + нарратив + fame)
+ * ```
+ *
+ * ```mermaid
+ * flowchart LR
+ *   subgraph P2["КАНОН ФАЗЫ 2 (17 систем, D-064)"]
+ *     direction LR
+ *     W["Weather"] --> AS["ArtifactSpawn"] --> N["Needs"] --> P["Perception"] --> RM["RobberyMemory"]
+ *     RM --> TS["TaskSelection"] --> MV["Movement"] --> TE["TaskEffects"] --> TR["Trade"]
+ *     TR --> ASe["ArtifactSearch"] --> EN["Encounters"] --> AN["Animals"] --> EC["Economy"]
+ *     EC --> EX["Export"] --> PI["PopulationInflux"] --> MD["MemoryDecay"]
+ *   end
+ *   MD --> RA["Radio (3.5)"] --> RU["Rumors (3.6)"] --> CH["Chronicle (3.2)"] --> DE["Death"]
+ *   CH -. incFame → §10.2 .-> CH
+ * ```
+ */
+export const PHASE3_SYSTEMS = [
+  Weather,
+  ArtifactSpawn,
+  Needs,
+  Perception,
+  RobberyMemory,
+  TaskSelection,
+  Movement,
+  TaskEffects,
+  Trade,
+  ArtifactSearch,
+  Encounters,
+  Animals,
+  Economy,
+  Export,
+  PopulationInflux,
+  MemoryDecay,
+  Radio,
+  Rumors,
+  Chronicle,
+  Death,
+] as const;
+
+/**
+ * Регистрирует все системы Фазы 3 в `scheduler` в каноническом порядке (см. docblock: инвариант
+ * D-074, сохраняющий стыки D-032/D-064 + нарративный блок Radio→Rumors→Chronicle перед Death).
+ * Вызывается ОДИН раз на свежем планировщике до первого тика. Порядок регистрации = порядок
+ * исполнения на тике (закон №8) — не менять без согласования через sim-architect (перестановка
+ * нарративного блока / вынос его за Death ломает канон, закреплено тестом pipeline.test.ts).
+ */
+export function registerPhase3Systems(scheduler: Scheduler): void {
+  for (const system of PHASE3_SYSTEMS) {
     scheduler.register(system);
   }
 }
