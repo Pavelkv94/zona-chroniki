@@ -100,6 +100,7 @@ const workerToUi: WorkerToUi[] = [
     removed: [9 as EntityId],
   },
   { type: 'logDelta', events: [event] },
+  { type: 'names', names: { 5: { first: 'Сергей', last: 'Лисенко', nickname: 'Лис' } } },
   { type: 'detail', detail },
   { type: 'detail', detail: null },
   { type: 'snapshot', data: snapshot, seed: 42 as Seed, tick: 1500 as Tick },
@@ -167,7 +168,7 @@ describe('дискриминант type уникален внутри каждо
   it('WorkerToUi: все type различны и покрыты образцами', () => {
     const types = workerToUi.map((m) => m.type);
     const unique = new Set(types);
-    expect([...unique].sort()).toEqual(['detail', 'logDelta', 'snapshot', 'stats', 'view', 'viewDelta']);
+    expect([...unique].sort()).toEqual(['detail', 'logDelta', 'names', 'snapshot', 'stats', 'view', 'viewDelta']);
     // detail представлен дважды (detail|null) — но это ОДИН дискриминант.
     expect(types.filter((t) => t === 'detail').length).toBe(2);
   });

@@ -2223,3 +2223,54 @@ delta.ts зависит ТОЛЬКО от plain-типов `@zona/shared` — ж
 
 Затрагивает: packages/ui/src/bridge/delta.ts (НОВЫЙ) + delta.test.ts, store/store.ts (applyMessage), worker
 (diffView + кадровый throttle). Голдены не затронуты (view read-only, D-080). npm run test/typecheck зелёные.
+
+## D-081 | Фаза 4 / задача 4.3 | 2026-07-05
+Решение (NAME-MAP через `exportNames` вместо пре-рендера строк в воркере). Панель эфира
+(RadioLog) собирает строку `[День N, ЧЧ:ММ] Имя: текст` из radio/message·radio/relayed
+через ЧИСТЫЙ `renderMessage` (3.4/D-069) — прямо в UI. Но `renderMessage.ctx.nameOf(eid)`
+требует СТРОКУ-имя говорящего/субъекта, а `EntityView`/`ViewDelta`/лог имён НЕ несут
+(лёгкий снимок каждый тик, D-076). Резолв имён — через ИНДЕКС `eid → EntityName`.
+
+── Почему name-map, а не пре-рендер в воркере ───────────────────────────────────
+Альтернатива: воркер САМ рендерит строку эфира (у него renderMessage+имена) и шлёт готовый
+текст в logDelta. Отклонено: (а) `renderMessage` в UI = ГИБКОСТЬ окраски/фильтров/будущей
+локализации (событие несёт templateId+params — D-069, суть контракта: перечитать факт в
+другом стиле); (б) пре-рендер продублировал бы строку в logDelta и связал воркер с
+презентацией. Name-map дешевле готовой строки на событие: имена СТАБИЛЬНЫ (задаются при
+спавне), шлём их ДЕЛЬТОЙ один раз на сущность, а не текст на каждое сообщение.
+
+── КОНТРАКТ ─────────────────────────────────────────────────────────────────────
+`exportNames(world): Record<number, EntityName>` (packages/sim/src/view/export.ts) — READ-ONLY
+plain-экспортёр (как exportWorldView/exportEntityDetail D-076): читает ResourceStore 'name' по
+носителям `Human` (людей; ВКЛЮЧАЯ трупы — Death снимает Alive, но Human и запись имени
+сохраняет ⇒ имя ПОГИБШЕГО субъекта эфира резолвится). НЕ система, в конвейер не входит ⇒ голдены
+целы (D-080/D-006, hash до==после). НИ ОДИН bitecs-тип наружу (закон №5): `EntityName` — plain
+`@zona/shared`. Мини-гейт — packages/headless/src/names-4.3.test.ts (детерминизм/чистое
+чтение/plain/люди-трупы-животные).
+
+Протокол (worker-protocol.ts): новое WorkerToUi-сообщение `{type:'names', names:Record<eid,
+EntityName>}`. Воркер (sim-worker.ts) шлёт ДЕЛЬТУ имён — только новые/изменившиеся eid (курсор
+`sentNameSig` по подписи `first last nickname`; подпись, а не множество eid, ловит редкий
+reuse-eid). init чистит курсор ⇒ первый push несёт полный набор имён мира; далее — прибавки
+новоприбывших (population/arrived). Стор (store.ts) МЕРЖИТ дельту в кэш `names`; init обнуляет.
+
+── ПАНЕЛЬ (packages/ui/src/radio/RadioLog.tsx) ──────────────────────────────────
+Из окна лога стора фильтрует radio/message (личная озвучка) + radio/relayed (слух), строит строки
+`renderMessage(templateId, params, {nameOf, locOf})`. nameOf: кличка → «Имя Фамилия» → `#eid`;
+locOf: `getLocation(loc).name`; itemOf НЕ даём (в items.json нет отображаемого имени —
+renderMessage подставит стабильный id). Слух (isFirsthand=false) помечен курсивом/приглушён
+(«непроверено»). УМНЫЙ АВТОСКРОЛЛ: липнем к низу, пока пользователь в пределах NEAR_BOTTOM_PX;
+прокрутил вверх — не дёргаем, всплывает кнопка «↓ вниз». Клик по имени → `store.inspect(speakerEid)`
+(read-only, D-076 — эстафета инспектору 4.5). Фильтр по типу (сообщения/слухи); ОКНО рендера
+RENDER_WINDOW=200 (кольцевой буфер стора ≤ LOG_WINDOW, здесь дорезаем видимое). Закон №5: DOM
+только в /ui; renderMessage/getLocation — публичное чистое чтение @zona/sim (как getLocation в 4.2).
+
+Затрагивает: packages/sim/src/view/export.ts (+exportNames) + index.ts (реэкспорт);
+packages/shared/src/worker-protocol.ts (+'names'); packages/ui/src/{worker/sim-worker.ts (дельта
+имён), store/store.ts (кэш names), App.tsx (монтаж), radio/RadioLog.tsx (НОВЫЙ)}. Тесты:
+names-4.3.test.ts, RadioLog.test.tsx, store.test.ts (+names), worker-protocol(.plain).test.ts
+(+'names' образец), App.layout.test.tsx (радио реализован). /sim-ЛОГИКА НЕ тронута (exportNames
+read-only, вне конвейера) ⇒ голдены целы: sim:100days 0f1ef408, пустой мир 481914ae, day1 seed42
+429867e2. npm run typecheck exit 0; npm run test зелёный (единичный флейк cli-голдена day100 —
+ТАЙМАУТ под параллельной нагрузкой, не рассинхрон: прямой sim:100days = 0f1ef408, см. vitest.config
+про параллельное замедление голденов).

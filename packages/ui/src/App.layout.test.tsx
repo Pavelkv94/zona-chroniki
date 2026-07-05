@@ -63,12 +63,15 @@ describe('App — четыре области макета и плейсхолд
     expect(screen.getByText(/Летопись \/ Инспектор/)).toBeTruthy();
   });
 
-  it('панели-заглушки несут TODO будущих задач (4.4/4.5–4.6); карта — уже холст (4.2)', () => {
+  it('карта (4.2) и радиоэфир (4.3) реализованы; летопись/инспектор — ещё TODO (4.5–4.6)', () => {
     render(<App />);
     // Карта реализована (задача 4.2): вместо TODO — Canvas-компонент.
     expect(screen.getByTestId('map-canvas')).toBeTruthy();
     expect(screen.queryByText(/TODO 4.2/)).toBeNull();
-    expect(screen.getByText(/TODO 4.4/)).toBeTruthy();
+    // Радиоэфир реализован (задача 4.3): вместо TODO — панель RadioLog.
+    expect(screen.getByTestId('radio-log')).toBeTruthy();
+    expect(screen.queryByText(/TODO 4.4/)).toBeNull();
+    // Летопись/инспектор пока заглушка.
     expect(screen.getByText(/TODO 4.5–4.6/)).toBeTruthy();
   });
 

@@ -230,6 +230,34 @@ export function exportWorldView(world: SimWorld): WorldView {
 }
 
 /**
+ * ЛЁГКИЙ ИНДЕКС ИМЁН людей мира (задача 4.3, D-081) — `eid → EntityName`. РЕЗОЛВ имён
+ * для read-time рендера эфира (`renderMessage.ctx.nameOf`): `EntityView`/`ViewDelta`
+ * ИМЁН НЕ несут (лёгкий снимок каждый тик), а строка радио-сообщения требует имя
+ * говорящего/субъекта. Имена ЗАДАЮТСЯ ПРИ СПАВНЕ и не меняются (worldgen/PopulationInflux)
+ * ⇒ индекс дёшев и стабилен: воркер шлёт его ДЕЛЬТОЙ (только новые/изменившиеся eid),
+ * UI кэширует и строит `nameOf`.
+ *
+ * ЧИТАЕТ носителей `Human` (только у людей есть имя; животных не касается) — ВКЛЮЧАЯ
+ * трупы (Death снимает `Alive`, но `Human` и запись `'name'` СОХРАНЯЕТ), чтобы имя
+ * ПОГИБШЕГО субъекта эфира всё ещё резолвилось. Обход `queryEntities` сорт. по eid
+ * (детерминизм, закон №8); ключи-числа объекта итерируются по возрастанию.
+ *
+ * ── ЗАКОН №5 / D-006 (как остальные экспортёры) ───────────────────────────────
+ * Возвращает PLAIN `Record<number, EntityName>` — ни один bitecs-тип наружу не течёт;
+ * НЕ система, в конвейер не входит, мир НЕ мутирует и события НЕ эмитит (hash до==после)
+ * ⇒ голдены целы (D-080). `EntityName` — уже существующий plain-контракт `@zona/shared`.
+ */
+export function exportNames(world: SimWorld): Record<number, EntityName> {
+  const out: Record<number, EntityName> = {};
+  for (const eid of queryEntities(world.ecs, [Human])) {
+    const n = world.resources.get<NameRecord>(NAME_KEY, eid);
+    if (n === undefined) continue; // человек без записи имени (не должно быть, закон №4) — пропуск
+    out[eid as number] = { first: n.first, last: n.last, nickname: n.nickname };
+  }
+  return out;
+}
+
+/**
  * ГЛУБОКОЕ полное состояние сущности `eid` (задача 4.1, D-076) — ПО ЗАПРОСУ (клик),
  * не каждый тик. `null`, если сущности нет (`existsEntity`) ИЛИ она не «кликабельна»
  * (не одна из видимых — часы мира/аномальное поле: в `WorldView` её нет, детали ей

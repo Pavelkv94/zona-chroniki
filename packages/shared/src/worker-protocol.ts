@@ -35,7 +35,7 @@
  */
 
 import type { EntityId, Seed, Tick } from './ids';
-import type { EntityView, EntityDetail, WorldView } from './view';
+import type { EntityView, EntityDetail, EntityName, WorldView } from './view';
 import type { SimEvent } from './events';
 import type { SnapshotJSON } from './snapshot';
 
@@ -102,6 +102,15 @@ export type WorkerToUi =
     }
   /** НОВЫЕ события лога с прошлой отправки (для радио-эфира/летописи). */
   | { readonly type: 'logDelta'; readonly events: readonly SimEvent[] }
+  /**
+   * ДЕЛЬТА ИНДЕКСА ИМЁН `eid → EntityName` (задача 4.3, D-081). Имена стабильны (задаются
+   * при спавне), поэтому воркер шлёт ТОЛЬКО новые/изменившиеся записи (не полный индекс
+   * каждый кадр), а стор МЕРЖИТ их в кэш. Нужен read-time рендеру эфира: строка
+   * радио-сообщения (`renderMessage.ctx.nameOf`) требует имя говорящего/субъекта, а
+   * `EntityView`/`ViewDelta` имён не несут (лёгкий снимок). Первый после init — полный
+   * набор имён текущего мира; далее — прибавки новоприбывших (`population/arrived`).
+   */
+  | { readonly type: 'names'; readonly names: Readonly<Record<number, EntityName>> }
   /** Тяжёлая деталь сущности (ответ на `inspect`); `null` — не «кликабельна»/нет. */
   | { readonly type: 'detail'; readonly detail: EntityDetail | null }
   /** Полный снапшот (ответ на `requestSnapshot`) для сохранения. */

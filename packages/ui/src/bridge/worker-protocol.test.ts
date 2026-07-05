@@ -111,6 +111,7 @@ describe('WorkerToUi — JSON round-trip', () => {
       removed: [9 as EntityId],
     },
     { type: 'logDelta', events: [sampleEvent] },
+    { type: 'names', names: { 5: { first: 'Сергей', last: 'Лисенко', nickname: 'Лис' } } },
     { type: 'detail', detail: sampleDetail },
     { type: 'detail', detail: null },
     { type: 'snapshot', data: sampleSnapshot, seed: 42 as Seed, tick: 1500 as Tick },

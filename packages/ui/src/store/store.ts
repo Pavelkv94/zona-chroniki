@@ -26,6 +26,7 @@ import { create } from 'zustand';
 import type {
   EntityDetail,
   EntityId,
+  EntityName,
   Seed,
   SimEvent,
   SnapshotJSON,
@@ -56,6 +57,12 @@ export interface UiState {
   readonly view: WorldView | null;
   /** Окно последних лог-событий (кольцевой буфер, ≤ LOG_WINDOW). */
   readonly log: readonly SimEvent[];
+  /**
+   * КЭШ индекса имён `eid → EntityName` (задача 4.3, D-081). Копится дельтами `names`
+   * воркера. Read-time рендер эфира строит `nameOf` из него (имя говорящего/субъекта —
+   * `EntityView`/лог их не несут). Стабилен: имена задаются при спавне, только прибывают.
+   */
+  readonly names: Readonly<Record<number, EntityName>>;
   /** Деталь выбранной сущности (ответ на inspect), `null` — ничего не выбрано. */
   readonly detail: EntityDetail | null;
   /** eid выбранной для слежения/инспекции сущности. */
@@ -109,6 +116,7 @@ export const useUiStore = create<UiState>((set, get) => {
   return {
     view: null,
     log: [],
+    names: {},
     detail: null,
     selectedEid: null,
     speed: 0,
@@ -119,8 +127,8 @@ export const useUiStore = create<UiState>((set, get) => {
 
     init(seed, snapshot) {
       const c = ensureClient();
-      // Новый мир — чистим окно/деталь/выбор (прошлый мир больше не актуален).
-      set({ view: null, log: [], detail: null, selectedEid: null, stats: null, connected: true });
+      // Новый мир — чистим окно/имена/деталь/выбор (прошлый мир больше не актуален).
+      set({ view: null, log: [], names: {}, detail: null, selectedEid: null, stats: null, connected: true });
       c.post(snapshot ? { type: 'init', seed, snapshot } : { type: 'init', seed });
     },
 
@@ -174,6 +182,14 @@ export const useUiStore = create<UiState>((set, get) => {
           // Кольцевой буфер: держим только последние LOG_WINDOW событий.
           const log = merged.length > LOG_WINDOW ? merged.slice(merged.length - LOG_WINDOW) : merged;
           set({ log });
+          return;
+        }
+        case 'names': {
+          // МЕРЖ дельты имён в кэш (D-081): имена стабильны, воркер шлёт только новые/
+          // изменившиеся eid. Пустая дельта — no-op (не плодим ре-рендер).
+          const keys = Object.keys(msg.names);
+          if (keys.length === 0) return;
+          set({ names: { ...get().names, ...msg.names } });
           return;
         }
         case 'detail': {

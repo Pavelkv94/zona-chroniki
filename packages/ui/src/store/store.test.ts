@@ -95,6 +95,7 @@ function simEvent(id: number, tick = 1): SimEvent {
 const FRESH = {
   view: null,
   log: [],
+  names: {},
   detail: null,
   selectedEid: null,
   speed: 0,
@@ -193,6 +194,39 @@ describe('applyMessage: окно лога — кольцевой буфер (D-0
     // Самое старое сохранённое — id 201 (1..200 вытеснены), самое новое — 1200.
     expect(log.at(0)?.id as number).toBe(201);
     expect(log.at(-1)?.id as number).toBe(1200);
+  });
+});
+
+describe('applyMessage: индекс имён — кэш дельтой (D-081)', () => {
+  it('names мержит дельту в кэш (новые eid добавляются, прежние сохраняются)', () => {
+    useUiStore.getState().applyMessage({
+      type: 'names',
+      names: { 5: { first: 'Сергей', last: 'Лисенко', nickname: 'Лис' } },
+    });
+    useUiStore.getState().applyMessage({
+      type: 'names',
+      names: { 6: { first: 'Пётр', last: 'Волков', nickname: '' } },
+    });
+    expect(useUiStore.getState().names).toEqual({
+      5: { first: 'Сергей', last: 'Лисенко', nickname: 'Лис' },
+      6: { first: 'Пётр', last: 'Волков', nickname: '' },
+    });
+  });
+
+  it('пустая дельта names — no-op (кэш не трогается)', () => {
+    useUiStore.getState().applyMessage({
+      type: 'names',
+      names: { 5: { first: 'Сергей', last: 'Лисенко', nickname: 'Лис' } },
+    });
+    const before = useUiStore.getState().names;
+    useUiStore.getState().applyMessage({ type: 'names', names: {} });
+    expect(useUiStore.getState().names).toBe(before); // та же ссылка (no-op)
+  });
+
+  it('init чистит кэш имён под новый мир', () => {
+    useUiStore.setState({ names: { 5: { first: 'A', last: 'B', nickname: '' } } });
+    useUiStore.getState().init(42 as Seed);
+    expect(useUiStore.getState().names).toEqual({});
   });
 });
 

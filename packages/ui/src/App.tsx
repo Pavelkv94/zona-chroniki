@@ -18,6 +18,7 @@
 import type { CSSProperties, ReactNode, ReactElement } from 'react';
 import { useUiStore } from './store/store';
 import MapCanvas from './map/MapCanvas';
+import RadioLog from './radio/RadioLog';
 
 // ── Палитра (тёмный фон #141210-подобный, приглушённые тона) ─────────────────
 const COLORS = {
@@ -106,7 +107,7 @@ export default function App(): ReactElement {
       </Panel>
 
       <Panel area="radio" title="Радиоэфир">
-        <div style={todo}>TODO 4.4: моноширинный лог радио, автоскролл, фильтры</div>
+        <RadioLog />
       </Panel>
 
       <Panel area="chronicle" title="Летопись / Инспектор">

@@ -43,11 +43,13 @@ import {
   deserialize,
   exportWorldView,
   exportEntityDetail,
+  exportNames,
   type SimWorld,
   type Scheduler,
 } from '@zona/sim';
 import type {
   EntityId,
+  EntityName,
   Seed,
   UiToWorker,
   WorkerToUi,
@@ -100,6 +102,13 @@ let tickAccumulator = 0;
 let lastSentView: WorldView | null = null;
 /** Длина лога, до которой события уже отправлены наблюдателю (курсор `logDelta`). */
 let sentLogLen = 0;
+/**
+ * Подпись УЖЕ отправленного имени по eid (`first last nickname`, токены имён —
+ * одиночные слова из данных, пробел-разделитель однозначен) — курсор дельты имён
+ * (D-081). Шлём только НОВЫЕ/ИЗМЕНИВШИЕСЯ записи. Подпись (а не просто множество eid) ловит
+ * РЕДКИЙ reuse-eid: слот переиспользован под другого сталкера ⇒ подпись сменилась ⇒ дошлём.
+ */
+const sentNameSig = new Map<number, string>();
 /** Счётчик кадров (для периодического `stats`). */
 let frameCount = 0;
 /** Метка времени прошлого кадра пейсинга (`performance.now`, драйвер ТЕМПА). */
@@ -159,6 +168,24 @@ function pushUpdate(current: Sim, measuredMs: number, forceStats: boolean): void
     ctx.postMessage({ type: 'logDelta', events: log.slice(sentLogLen) });
     sentLogLen = log.length;
   }
+
+  // names: ДЕЛЬТА индекса имён (D-081). Имена стабильны ⇒ шлём только новые/изменившиеся
+  // записи (курсор sentNameSig). Дёшево: обход носителей Human O(люди), но постим лишь
+  // при реальном приросте (init/новоприбывшие). Нужно эфиру для read-time nameOf.
+  const names = exportNames(current.world);
+  const fresh: Record<number, EntityName> = {};
+  let hasFresh = false;
+  for (const key of Object.keys(names)) {
+    const eid = Number(key);
+    const n = names[eid]!;
+    const sig = `${n.first} ${n.last} ${n.nickname}`;
+    if (sentNameSig.get(eid) !== sig) {
+      fresh[eid] = n;
+      sentNameSig.set(eid, sig);
+      hasFresh = true;
+    }
+  }
+  if (hasFresh) ctx.postMessage({ type: 'names', names: fresh });
 
   frameCount++;
   if (forceStats || frameCount % STATS_EVERY_FRAMES === 0) {
@@ -222,6 +249,9 @@ function handleCommand(msg: UiToWorker): void {
       lastSentView = null; // первый push будет полным `view`
       // Resume: не заливаем всю историю лога как «новые» — курсор в конец текущего лога.
       sentLogLen = sim.world.bus.log.length;
+      // Новый мир — прошлый индекс имён недействителен: чистим курсор, чтобы первый push
+      // отправил ПОЛНЫЙ набор имён текущего мира (D-081).
+      sentNameSig.clear();
       frameCount = 0;
       // Немедленный полный снимок мира после сборки/восстановления.
       pushUpdate(sim, 0, true);

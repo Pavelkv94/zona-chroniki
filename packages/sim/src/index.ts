@@ -102,6 +102,10 @@ export type { SimEvent } from '@zona/shared';
 // чтение (D-006, hash до==после); НИ ОДИН bitecs-тип наружу не течёт (закон №5/D-011 —
 // обёртки core/ecs читаются ВНУТРИ, не реэкспортируются). Типы форм — из @zona/shared.
 export { exportWorldView, exportEntityDetail } from './view/export';
+// exportNames (4.3, D-081): лёгкий индекс `eid → EntityName` для read-time резолва имён
+// эфира (`renderMessage.ctx.nameOf`) — EntityView имён не несёт. Read-only/plain, вне
+// конвейера (как остальные экспортёры) ⇒ голдены целы (D-080/D-006).
+export { exportNames } from './view/export';
 export type {
   EntityKind,
   EntityView,
