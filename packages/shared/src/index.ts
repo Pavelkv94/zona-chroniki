@@ -47,6 +47,11 @@ export type {
 
 export type { JsonValue, SnapshotJSON, ComponentColumnJSON } from './snapshot';
 
+// Контракт Worker-моста Sim⇄UI (задача 4.0, D-077/D-078): plain-сериализуемые команды
+// (UiToWorker) и обновления (WorkerToUi) через границу postMessage + форма дельты вида
+// (ViewDelta). Формы БЕЗ bitecs/DOM (закон №5); UI-команды влияют лишь на темп (закон №8).
+export type { ViewDelta, UiToWorker, WorkerToUi } from './worker-protocol';
+
 export type {
   LocationType,
   LocationData,

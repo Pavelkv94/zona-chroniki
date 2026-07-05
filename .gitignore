@@ -6,5 +6,8 @@ node_modules/
 .vite/
 *.tsbuildinfo
 
+# Сборка UI (Vite)
+dist/
+
 # Логи/временное
 *.log

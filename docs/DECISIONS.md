@@ -2169,3 +2169,57 @@ npm run test ЗЕЛЁНЫЙ (64 файла, 1681 тест; +13 тестов 4.1)
 packages/sim/src/view/export.ts (НОВЫЙ, экспортёры), packages/sim/src/index.ts (реэкспорт функций+типов),
 packages/headless/src/view-4.1.test.ts (НОВЫЙ, тесты), docs/diagrams/view-export-4.1.md (НОВЫЙ). НЕ трогали:
 конвейер, worldgen, системы, balance, обёртки core/ecs (наружу не выведены). D-080: Фаза 4 — наблюдатель.
+
+## D-077 | Фаза 4 / задача 4.0 | 2026-07-05
+Решение (WORKER-МОСТ Sim⇄UI: ГРАНИЦА — postMessage). ПЕРВЫЙ код интерфейса наблюдателя. `@zona/ui` крутит
+headless-`@zona/sim` в Web Worker'е ВНЕ UI-потока (GDD §13.1: UI никогда не блокирует симуляцию). Единственная
+граница ECS↔UI — `postMessage`: воркер импортирует `@zona/sim` ВНУТРИ и гоняет мир, а НАРУЖУ шлёт ТОЛЬКО
+plain-формы `@zona/shared` (`exportWorldView`/`exportEntityDetail`/`serialize` → сообщения протокола). НИ ОДИН
+bitecs-тип (`EcsWorld`/`ComponentRef`/SoA-колонка) не пересекает postMessage (закон №5). `@zona/ui` (React/DOM)
+в воркер не тянется; `@zona/sim` остаётся headless (в /sim/ /shared DOM-зависимости НЕ добавлены).
+
+── ПРОТОКОЛ (packages/shared/src/worker-protocol.ts, plain, БЕЗ bitecs/DOM — как view.ts) ──
+UI→Worker `UiToWorker`: `init{seed,snapshot?}` · `setSpeed{ticksPerRealSecond}` (0=пауза) · `step{ticks}` ·
+`inspect{eid}` · `requestSnapshot`. Worker→UI `WorkerToUi`: `view{view:WorldView}` · `viewDelta{tick,day,
+weather,changed:EntityView[],removed:EntityId[]}` · `logDelta{events:SimEvent[]}` · `detail{detail:EntityDetail|
+null}` · `snapshot{data:SnapshotJSON,seed,tick}` · `stats{tick,entityCount,tickMs}`. Все варианты JSON round-trip
+(тест сериализуемости 4.0). Форма дельты `ViewDelta` — тоже в shared (plain-контракт).
+
+── ⚠ РОВНО ОДИН МИР НА ВОРКЕР (заметка 4.1) ─────────────────────────────────────
+SoA-колонки bitecs ГЛОБАЛЬНЫ НА ПРОЦЕСС — два `SimWorld` в одном воркере затёрли бы друг друга. Воркер держит
+РОВНО ОДИН мир; `init` заменяет его целиком (`createSimWorld`→`worldgen`→`registerPhase3Systems` ЛИБО
+`deserialize`). Вторая симуляция ⇒ второй воркер (свой процесс/поток → своя копия колонок). Задокументировано
+в docblock воркера.
+
+── ЗАКОН №8 (детерминизм): реальное время → ТЕМП, НЕ содержимое ─────────────────
+UI-команды влияют лишь на ТЕМП/паузу/шаг/инспекцию, НЕ на содержимое тиков. Воркер пейсит `floor(dt ×
+ticksPerRealSecond)` тиков за реальный кадр — `performance.now` тут ДРАЙВЕР ТЕМПА (как замер `ms` в headless-CLI,
+D-006): решает КОЛИЧЕСТВО тиков, но каждый тик считает тот же seeded-конвейер. «Тот же seed + тот же номер тика →
+тот же хэш» держится независимо от пауз/×600/шага. Внутри тика ни Date.now/performance.now (это /sim, не тронут).
+
+Затрагивает: packages/shared/src/worker-protocol.ts (НОВЫЙ) + index.ts (реэкспорт), packages/ui/* (НОВЫЙ каркас:
+bridge/worker-client.ts, worker/sim-worker.ts, store/store.ts, App.tsx, main.tsx, vite.config.ts, index.html,
+package.json/tsconfig deps), docs/diagrams/ui-bridge-4.0.md. НЕ трогали /sim-логику (только чтение публичного API)
+⇒ голдены целы: sim:100days 0f1ef408, day1 seed42 429867e2, пустой мир 481914ae. npm run test ЗЕЛЁНЫЙ (67 файлов,
+1724 теста; +3 UI-файла), typecheck exit 0 (вкл. /ui). D-080: Фаза 4 — наблюдатель, не участник.
+
+## D-078 | Фаза 4 / задача 4.0 | 2026-07-05
+Решение (ДЕЛЬТЫ + THROTTLE вместо полного снимка каждый тик). При ×600 мир идёт сотни тиков/сек — гнать полный
+`WorldView` по postMessage на КАЖДЫЙ тик расточительно и захлебнёт UI. Воркер обновляет наблюдателя с THROTTLE
+~15 Гц (`SEND_HZ`, кадровый таймер) и шлёт не полный вид, а ДЕЛЬТУ.
+
+── ФОРМА (packages/ui/src/bridge/delta.ts, ЧИСТАЯ, headless-тестируема) ──────────
+`diffView(prev:WorldView|null, next):ViewDelta` — `changed` = новые/изменившиеся `EntityView` (сравнение по
+ЯВНОМУ списку полей, не JSON.stringify), `removed` = исчезнувшие eid; часы/погода из `next`; оба массива сорт.
+по eid (закон №8). `applyDelta(base, delta):WorldView` — применяет removed/changed, сортирует, ПЕРЕСЧИТЫВАЕТ
+`population` по `kind` (в дельту НЕ входит — производна ⇒ трафик минимален). ИНВАРИАНТ (тест round-trip на 8
+парах видов): `applyDelta(prev, diffView(prev,next))` deep-equal `next`. Первый снимок после init — полный `view`
+(база для дельт), дальше — `viewDelta`; стор держит текущий вид применением дельт.
+
+── БЕЗ DOM ──────────────────────────────────────────────────────────────────────
+delta.ts зависит ТОЛЬКО от plain-типов `@zona/shared` — живёт в /ui, но чист и тестируем в Node (Vitest). Стор
+(zustand) применяет `applyMessage`: view→set, viewDelta→applyDelta, logDelta→кольцевой буфер (LOG_WINDOW=1000,
+ПРЕЗЕНТАЦИОННЫЙ предел, НЕ balance-константа), detail/snapshot/stats→set. Пейсинг/throttle — в воркере (D-077).
+
+Затрагивает: packages/ui/src/bridge/delta.ts (НОВЫЙ) + delta.test.ts, store/store.ts (applyMessage), worker
+(diffView + кадровый throttle). Голдены не затронуты (view read-only, D-080). npm run test/typecheck зелёные.
