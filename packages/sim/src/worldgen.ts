@@ -89,6 +89,7 @@ import {
   Human,
   Alive,
   WEATHER_CODE,
+  EmissionPhase,
 } from './core/components';
 import { MAP, NAMES, getSpecies, getSettlements, getAnomalyFields } from './data/index';
 import type { SettlementData, AnomalyFieldData } from '@zona/shared';
@@ -151,7 +152,13 @@ const SKILL = Skills as unknown as {
 };
 const HOME = Home as unknown as { loc: Uint32Array };
 const ANIMAL = Animal as unknown as { species: Uint8Array; herd: Uint32Array };
-const CLOCK = WorldClock as unknown as { weather: Uint8Array; weatherSince: Uint32Array };
+const CLOCK = WorldClock as unknown as {
+  weather: Uint8Array;
+  weatherSince: Uint32Array;
+  zonePressure: Float32Array;
+  emissionPhase: Uint8Array;
+  phaseSince: Uint32Array;
+};
 const SETTLE = Settlement as unknown as {
   morale: Float32Array;
   security: Float32Array;
@@ -371,12 +378,21 @@ export function worldgen(world: SimWorld): void {
  * Создаёт сущность-носитель WorldClock (D-019, singleton). Стартовая погода —
  * 'clear' (код 0), `weatherSince = 0`. Ровно ОДИН носитель: система Weather (1.6)
  * бросает при >1 (D-028), поэтому worldgen создаёт его единожды.
+ *
+ * ФАЗА 5 (задача 5.0): поля эмиссии инициализируются НУЛЁМ —
+ * `zonePressure=0`, `emissionPhase=EmissionPhase.BUILDING (0)`, `phaseSince=0`.
+ * Это уже гарантирует `addComponent` (зануление, D-024); записи ниже — ЯВНЫЙ
+ * контракт стартового состояния (а не «молчаливый дефолт»), как для weather.
+ * В 5.0 эти поля НИКЕМ не читаются/пишутся после worldgen (цикл выброса — 5.2).
  */
 function spawnWorldClock(world: SimWorld): void {
   const eid = spawnEntity(world.ecs);
   addComponent(world.ecs, WorldClock, eid); // зануляет поля (D-024)
   CLOCK.weather[eid] = WEATHER_CODE.clear; // ясно на старте (индекс 0)
   CLOCK.weatherSince[eid] = 0;
+  CLOCK.zonePressure[eid] = 0; // давление Зоны с нуля (Фаза 5, 5.0)
+  CLOCK.emissionPhase[eid] = EmissionPhase.BUILDING; // 0 — спокойная фаза
+  CLOCK.phaseSince[eid] = 0;
 }
 
 // ── Сталкеры (20, Кордон) ────────────────────────────────────────────────────

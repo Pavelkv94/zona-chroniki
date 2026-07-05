@@ -139,6 +139,9 @@ const VALID_ITEM_KINDS = new Set<ItemKind>([
   'drink',
   'medical',
   'artifact',
+  // Фаза 5 (задача 5.0): 'part' — часть туши мутанта (лапа/щупальце/коготь), без
+  // обязательных доп-полей (как 'medical'). APPEND-ONLY; items.json наполнит 5.1.
+  'part',
 ]);
 
 function validateItems(data: unknown): readonly ItemData[] {

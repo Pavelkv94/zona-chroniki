@@ -76,6 +76,9 @@ describe('реестр наполнен и отсортирован (D-019, за
       'personality',
       'position',
       'settlement',
+      // Фаза 5 (задача 5.0): 'sickness' между 'settlement' и 'skills' (нулевой
+      // мембершип — в снапшот прогона не пишется, регистрация схемы аддитивна).
+      'sickness',
       'skills',
       'task',
       'worldclock',
@@ -104,7 +107,22 @@ describe('реестр наполнен и отсортирован (D-019, за
     expect(byName.get('skills')?.fields).toEqual(['shooting', 'survival', 'stealth']);
     expect(byName.get('home')?.fields).toEqual(['loc']);
     expect(byName.get('animal')?.fields).toEqual(['species', 'herd']);
-    expect(byName.get('worldclock')?.fields).toEqual(['weather', 'weatherSince']);
+    // Фаза 5 (задача 5.0): поля эмиссии добавлены APPEND-ONLY в КОНЕЦ (weather/
+    // weatherSince не тронуты, порядок снапшота стабилен, закон №8).
+    expect(byName.get('worldclock')?.fields).toEqual([
+      'weather',
+      'weatherSince',
+      'zonePressure',
+      'emissionPhase',
+      'phaseSince',
+    ]);
+    // Фаза 5 (задача 5.0): новый компонент Sickness (мембершип нулевой до 5.8).
+    expect(byName.get('sickness')?.fields).toEqual([
+      'disease',
+      'severity',
+      'exposure',
+      'sinceTick',
+    ]);
     // Фаза 2 (D-046): data-компоненты без тега, поля в объявленном порядке.
     expect(byName.get('settlement')?.fields).toEqual([
       'morale',

@@ -85,6 +85,12 @@ export const WORLD_CAPACITY = 4096;
  * SEARCH — работа на поселение (2.4), торговля (2.6), грабёж (2.12), поход за
  * артефактом (2.10). Семантику этих задач фиксируют их системы Фазы 2; здесь —
  * лишь стабильные ui8-коды, на которые ссылается `Task.kind`.
+ *
+ * ФАЗА 5 (задача 5.0): коды 11–12 добавлены APPEND-ONLY в конец (0–10 НЕ тронуты):
+ * TAKE_SHELTER (укрыться от выброса, 5.2) и TREAT (лечить болезнь, 5.8). В 5.0 это
+ * ЧИСТО схемное расширение кодового пространства — НИ ОДИН utility их пока не
+ * выбирает (поведение вводят системы 5.2/5.8), поэтому распределение задач в
+ * прогоне не меняется и голдены поведения не сдвигаются.
  */
 export const TaskKind = {
   /** Спать (восстановление fatigue, обычно дома). */
@@ -109,6 +115,18 @@ export const TaskKind = {
   ROB: 9,
   /** Поход за артефактом в аномальное поле (targetLoc/targetEid — поле; система 2.10). */
   SEARCH: 10,
+  /**
+   * Укрыться от выброса (Фаза 5, задача 5.0/5.2): уйти в укрытие (`Location.shelter`)
+   * при нарастающем давлении Зоны (`WorldClock.emissionPhase`). ЗАРЕЗЕРВИРОВАННЫЙ код —
+   * в 5.0 ни один utility его не выбирает (поведение вводит система выброса позже).
+   */
+  TAKE_SHELTER: 11,
+  /**
+   * Лечить болезнь (Фаза 5, задача 5.0/5.8): применить медикамент к носителю
+   * `Sickness` (себе или цели `targetEid`). ЗАРЕЗЕРВИРОВАННЫЙ код — в 5.0 ни один
+   * utility его не выбирает (болезни не штампуются до 5.8).
+   */
+  TREAT: 12,
 } as const;
 
 /** Тип кода задачи (значение `TaskKind.*`). */
@@ -258,12 +276,56 @@ export const Animal: ComponentRef = defineComponentT(
 );
 
 /**
+ * Код ФАЗЫ ВЫБРОСА Зоны (`WorldClock.emissionPhase`, хранится как ui8). Это
+ * СТРУКТУРНЫЙ код (не баланс — пороги давления/длительности фаз тюнятся в
+ * /sim/balance; не контент — не в /sim/data), поэтому живёт рядом с компонентом
+ * WorldClock, как `TaskKind` рядом с Task. Фаза 5, задача 5.0/5.2 (эмиссия/выброс).
+ *
+ * ВНИМАНИЕ (стабильность формата): значения — коды ui8 в снапшоте. Набор
+ * APPEND-ONLY; `BUILDING=0` (базовое/фолбэк-состояние) совпадает с занулением
+ * `addComponent` (D-024), поэтому свежий singleton стартует в BUILDING без явной
+ * записи. В 5.0 НИКАКАЯ система эти коды не читает/пишет — цикл выброса вводит 5.2.
+ */
+export const EmissionPhase = {
+  /** Накопление давления Зоны (спокойная фаза, базовое состояние, =0). */
+  BUILDING: 0,
+  /** Выброс неизбежен — предвестники, окно уйти в укрытие (TAKE_SHELTER). */
+  IMMINENT: 1,
+  /** Активный выброс — урон/мутации вне укрытия. */
+  ACTIVE: 2,
+  /** Разрядка после выброса — давление сброшено, восстановление. */
+  RECHARGE: 3,
+} as const;
+
+/** Тип кода фазы выброса (значение `EmissionPhase.*`). */
+export type EmissionPhase = (typeof EmissionPhase)[keyof typeof EmissionPhase];
+
+/**
  * Часы мира — SINGLETON на сущности-мире (её создаёт worldgen 1.3; аллокацию eid
  * и его тождество держит worldgen, не этот модуль). `weather` — код `WEATHER_CODE`;
  * `weatherSince` — тик начала текущей погоды (для длительности марковского перехода).
+ *
+ * ФАЗА 5 (задача 5.0, эмиссия/выброс): три поля ДОБАВЛЕНЫ APPEND-ONLY В КОНЕЦ схемы
+ * (weather/weatherSince НЕ тронуты, порядок снапшота стабилен, закон №8):
+ *  - `zonePressure` (f32) — накопленное давление Зоны (растёт к выбросу);
+ *  - `emissionPhase` (ui8) — код `EmissionPhase` (0=BUILDING базовое, совпадает с
+ *    занулением addComponent, D-024);
+ *  - `phaseSince` (ui32) — тик начала текущей фазы (длительность, как `weatherSince`).
+ * В 5.0 это ЧИСТО схемные поля-ДАННЫЕ: worldgen инициализирует их нулём, а НИКАКАЯ
+ * система их пока не читает/пишет (цикл выброса вводит 5.2). Поскольку singleton
+ * WorldClock есть в КАЖДОМ прогоне worldgen, добавление сериализуемых полей меняет
+ * снапшот ЖИВОГО мира; ПУСТОЙ мир (createSimWorld без worldgen) носителя WorldClock
+ * НЕ имеет, поэтому его голден-хэш не затрагивается (серилизатор пропускает
+ * компонент без живых носителей).
  */
 export const WorldClock: ComponentRef = defineComponentT(
-  { weather: Types.ui8, weatherSince: Types.ui32 },
+  {
+    weather: Types.ui8,
+    weatherSince: Types.ui32,
+    zonePressure: Types.f32,
+    emissionPhase: Types.ui8,
+    phaseSince: Types.ui32,
+  },
   WORLD_CAPACITY,
 );
 
@@ -357,6 +419,49 @@ export const Job: ComponentRef = defineComponentT(
   WORLD_CAPACITY,
 );
 
+// ── Фаза 5: болезни (задача 5.0 — только СХЕМА, штамповка отложена до 5.8) ─────
+
+/**
+ * Код БОЛЕЗНИ (`Sickness.disease`, хранится как ui8). СТРУКТУРНЫЙ код (не баланс —
+ * тяжесть/инкубация тюнятся в /sim/balance; конкретные болезни-контент придут в
+ * data позже), поэтому живёт рядом с компонентом Sickness. Фаза 5, задача 5.0/5.8.
+ *
+ * ВНИМАНИЕ (стабильность формата): значения — коды ui8 в снапшоте. Набор
+ * APPEND-ONLY; `HEALTHY=0` (нет болезни) совпадает с занулением `addComponent`
+ * (D-024). В 5.0 набор минимален (только HEALTHY): конкретные болезни добавит 5.8
+ * APPEND-ONLY, не сдвигая 0.
+ */
+export const Disease = {
+  /** Здоров (нет активной болезни, базовое состояние, =0). */
+  HEALTHY: 0,
+} as const;
+
+/** Тип кода болезни (значение `Disease.*`). */
+export type Disease = (typeof Disease)[keyof typeof Disease];
+
+/**
+ * Болезнь носителя (Фаза 5, задача 5.0 — СХЕМА; штамповка/лечение отложены до 5.8).
+ * Носители — ТОЛЬКО люди, но в 5.0 НИКТО компонент не носит (мембершип НУЛЕВОЙ):
+ * это чисто регистрация пустой SoA-колонки, поэтому living-снапшот от одного факта
+ * регистрации не меняется (серилизатор пропускает компонент без живых носителей).
+ *  - `disease` (ui8) — код `Disease` (0=HEALTHY, совпадает с занулением addComponent);
+ *  - `severity` (f32) — тяжесть 0..1 (растёт без лечения, влияет на нужды/hp в 5.8);
+ *  - `exposure` (f32) — накопленная экспозиция 0..1 (риск заболеть; порог → disease>0);
+ *  - `sinceTick` (ui32) — тик начала текущего состояния болезни (инкубация/течение).
+ * Причинность болезни (источник заражения) и лечение (TREAT) вводит система 5.8;
+ * здесь — стабильная раскладка полей (порядок = снапшот, закон №8). Поля в
+ * объявленном порядке: disease, severity, exposure, sinceTick.
+ */
+export const Sickness: ComponentRef = defineComponentT(
+  {
+    disease: Types.ui8,
+    severity: Types.f32,
+    exposure: Types.f32,
+    sinceTick: Types.ui32,
+  },
+  WORLD_CAPACITY,
+);
+
 // ── Теги (маркеры без полей, D-019) ──────────────────────────────────────────
 
 /** Тег: сущность — человек (NPC-сталкер). «Холодные» данные — в ResourceStore. */
@@ -395,7 +500,17 @@ export const DOMAIN_COMPONENTS: readonly ComponentMeta[] = [
   { name: 'position', ref: Position, fields: ['loc', 'dest', 'etaTicks', 'moveCause'] },
   // Фаза 2 (D-046): 'settlement' между 'position' и 'skills' (se… < sk…).
   { name: 'settlement', ref: Settlement, fields: ['morale', 'security', 'buildTarget', 'buildProgress'] },
+  // Фаза 5 (задача 5.0): 'sickness' сортируется между 'settlement' (se…) и 'skills'
+  // (si… < sk…). Мембершип нулевой в 5.0 (никто не носит) — колонка в снапшот не
+  // пишется, голдены от регистрации не сдвигаются. Поля в объявленном порядке.
+  { name: 'sickness', ref: Sickness, fields: ['disease', 'severity', 'exposure', 'sinceTick'] },
   { name: 'skills', ref: Skills, fields: ['shooting', 'survival', 'stealth'] },
   { name: 'task', ref: Task, fields: ['kind', 'targetLoc', 'targetEid', 'startedTick', 'causeEvent'] },
-  { name: 'worldclock', ref: WorldClock, fields: ['weather', 'weatherSince'] },
+  // Фаза 5 (задача 5.0): три поля эмиссии добавлены APPEND-ONLY в КОНЕЦ списка
+  // (weather/weatherSince не тронуты, порядок снапшота стабилен, закон №8).
+  {
+    name: 'worldclock',
+    ref: WorldClock,
+    fields: ['weather', 'weatherSince', 'zonePressure', 'emissionPhase', 'phaseSince'],
+  },
 ] as const;

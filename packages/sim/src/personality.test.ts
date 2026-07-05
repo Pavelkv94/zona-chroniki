@@ -431,18 +431,20 @@ describe('Personality: голдены-якоря активными assert (D-07
     expect(hashSnapshot(snap)).toBe('481914ae');
   });
 
-  it('день-1 seed42 на конвейере Фазы 2 (физический базлайн) = 3c54d141', () => {
+  it('день-1 seed42 на конвейере Фазы 2 (физический базлайн) = 5b06b2f5', () => {
     // ЯКОРЬ конвейера Фазы 2 (createSimWorld → worldgen → registerPhase2Systems → прогон
-    // TICKS_PER_DAY): rng-хвост Personality (D-071) закреплён числом 3c54d141. Задача 3.7
-    // (D-074) подключила нарративный блок в конвейер CLI/phase1-gate — их день-1 голден
-    // сдвинулся до f554331d (заполнение лога эфиром/слухами/летописью + fame). Но нарратив
-    // ПОВЕДЕНЧЕСКИ ИНЕРТЕН для физики (пишет fame/memory, дизъюнктные positions/inventory),
-    // поэтому ФИЗИЧЕСКИЙ голден Фазы 2 остаётся 3c54d141 — этот якорь его и фиксирует.
+    // TICKS_PER_DAY): rng-хвост Personality (D-071) закреплён. Задача 3.7 (D-074) подключила
+    // нарративный блок в конвейер CLI/phase1-gate — их день-1 голден сдвинулся до f554331d
+    // (заполнение лога эфиром/слухами/летописью + fame). Но нарратив ПОВЕДЕНЧЕСКИ ИНЕРТЕН для
+    // физики (пишет fame/memory, дизъюнктные positions/inventory), поэтому ФИЗИЧЕСКИЙ голден
+    // Фазы 2 держался 3c54d141. 5.0/D-083 (схемы Фазы 5): singleton WorldClock вырос с 2→5
+    // полей (эмиссия, все=0) ⇒ канон сдвинут ЧИСТО СХЕМНО 3c54d141 → 5b06b2f5 (поведение/rng
+    // не тронуты — пере-сериализация со старым набором полей воспроизводит 3c54d141).
     const world = createSimWorld(42 as Seed);
     worldgen(world);
     const sched = createScheduler();
     registerPhase2Systems(sched);
     sched.run(world, TICKS_PER_DAY);
-    expect(hashSnapshot(serialize(world))).toBe('3c54d141');
+    expect(hashSnapshot(serialize(world))).toBe('5b06b2f5');
   });
 });

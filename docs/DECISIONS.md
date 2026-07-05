@@ -2348,3 +2348,29 @@ requestSave/loadSave/refreshSaves/deleteSave, персист в applyMessage 'sn
 App.tsx (монтаж SaveControls), package.json (devDep fake-indexeddb). /sim/shared/headless НЕ тронуты
 ⇒ голдены целы: sim:100days 0f1ef408, пустой мир 481914ae, day1 seed42 429867e2 (UI-only задача).
 npm run typecheck exit 0; npm run test зелёный.
+
+## D-083 | Фаза 5 / задача 5.0 | 2026-07-05
+Решение (СХЕМЫ-фундамент Фазы 5 «Экосистема и Стратегия» — чисто аддитивно, без систем/поведения).
+Проект фазы (sim-architect): 24 системы, выбросы/мутанты/зомби/болезни/FactionAI/пищевая пирамида,
+причинность вместо рандома (закон №2), шанс закрыть балансовый хвост P-5 (дичь→0). Порядок под-задач
+5.0→5.12 (D-083..D-095). Задача 5.0 закладывает СХЕМУ append-only (закон №8):
+- WorldClock +3 поля эмиссии: `zonePressure` (f32), `emissionPhase` (ui8: 0 BUILDING/1 IMMINENT/
+  2 ACTIVE/3 RECHARGE), `phaseSince` (ui32) — в КОНЕЦ схемы; enum `EmissionPhase`. Инициализация 0
+  в spawnWorldClock. Никто пока не читает/пишет.
+- Компонент `Sickness` (люди): `disease` (ui8, 0=здоров), `severity`/`exposure` (f32), `sinceTick`
+  (ui32) + enum `Disease`. Регистрация в DOMAIN_COMPONENTS; worldgen НЕ штампует (отложено до 5.8) ⇒
+  мембершип нулевой, колонка в прогон не пишется.
+- Флаги SpeciesData (опциональны, data-driven §10): predator/grazes/nocturnal/reanimated/prey[]/
+  partItem/partYield/moveDriver('herd'|'pack'|'solo'|'noise'). Наполнит species.json в 5.1.
+- TaskKind append-only: TAKE_SHELTER=11, TREAT=12 (после 10=SEARCH). Ни один utility не выбирает.
+- ItemKind +'part' (сырьё-трофей из туши мутанта, источник = разделка как meat; §3). items.json без
+  'part' до 5.1.
+ГОЛДЕНЫ: пустой мир 481914ae ЦЕЛ (сериализатор пропускает компонент без живых носителей, snapshot.ts
+carriers.length===0 → skip; пустой мир не носит WorldClock). Живые сдвинулись ЧИСТО СХЕМНО (рост
+колонки singleton WorldClock 2→5 полей, 3 новых=0): day1 seed42 429867e2→1b5beda6, sim:100days
+0f1ef408→722409ac, Ф2-physical 3c54d141→5b06b2f5. Доказано: пере-сериализация того же мира со СТАРЫМ
+набором полей воспроизводит оригинальные хэши (rng/лог/сущности байт-в-байт те же); events 14794/601468
+не изменились; интегратор подтвердил детерминизм новых хэшей 2×. Ноль поведенческих протечек (grep:
+новые TaskKind не выбираются, Sickness/эмиссия нигде не читаются, флаги видов/‘part’ нигде не влияют).
+Заметка к 5.1: validateSpecies должен fail-fast валидировать новые флаги (тип, резолвимость prey/
+partItem, partItem↔partYield, moveDriver∈enum). 89 файлов/2039 тестов зелёные, typecheck 0.
