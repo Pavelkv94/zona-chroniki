@@ -82,12 +82,12 @@ describe('exportNames: чистое чтение — голдены целы (D-
     expect(hashSnapshot(serialize(a.world)), 'exportNames обязан быть чистым чтением').toBe(before);
   });
 
-  it('ГОЛДЕН day1 seed42 = 00dc66c3 не сдвигается вызовом exportNames', () => {
+  it('ГОЛДЕН day1 seed42 = 7cd7db13 не сдвигается вызовом exportNames', () => {
     const a = build(42);
     a.run(DAY);
-    expect(hashSnapshot(serialize(a.world))).toBe('00dc66c3');
+    expect(hashSnapshot(serialize(a.world))).toBe('7cd7db13');
     exportNames(a.world);
-    expect(hashSnapshot(serialize(a.world)), 'exportNames осквернил голден-мир').toBe('00dc66c3');
+    expect(hashSnapshot(serialize(a.world)), 'exportNames осквернил голден-мир').toBe('7cd7db13');
   });
 
   it('пустой мир: индекс пуст, голден 481914ae цел', () => {

@@ -43,8 +43,9 @@
  *   EAT    = (W.hunger + W.food)·hunger    (ТОЛЬКО если в инвентаре есть еда)
  *   DRINK  = W.thirst·thirst + waterHere·W.water
  *   HUNT   = (W.hunger + gameAbund·W.game + survival·W.skill)·hunger
- *            − fear·W.fear − (night?W.nightHunt:0)  (ТОЛЬКО если есть достижимая дичь;
- *            вклад «удобства» охоты домножен на голод — сытый не охотится, 5.2)
+ *            − fear·W.fear − (night?W.nightHunt:0) − chaseCost  (ТОЛЬКО если есть
+ *            достижимое угодье; вклад «удобства» домножен на голод — сытый не охотится,
+ *            5.2; chaseCost — штраф погони, см. ниже, задача A закрытия P-5)
  *   FLEE   = W.fleeFear·fear
  *   FORAGE = FALLBACK_SCORE_FLOOR + W.forageBase·forageAbund   (fallback; ДОБЫВАЕТ
  *            forage_food из среды в TaskEffects, 5.2 — не мгновенный эффект)
@@ -73,6 +74,28 @@
  * масштабированный голодом) поднимает EAT НАД HUNT — рационально доесть запас,
  * прежде чем идти на риск охоты (D-034).
  *
+ * ── ЦЕЛЬ ОХОТЫ И СТОИМОСТЬ ПОГОНИ (задача A закрытия P-5, анти-чит, закон №1/№2) ─
+ * КОРЕНЬ P-5 (дичь вымирала в 0): прежний таргетинг брал `herd[0]` = min-eid особь
+ * ближайшего угодья — ДЕТЕРМИНИРОВАННЫЙ АРТЕФАКТ сортировки, а не осмысленный выбор.
+ * ВСЕ охотники кластера конвейерно били ОДНУ и ту же особь, истребляя стадо поштучно.
+ * ИСПРАВЛЕНО двумя причинными механизмами:
+ *  1) ЖЕРТВА ИЗ ЛИЧНОГО ВОСПРИЯТИЯ (`perceivedHuntTarget`): цель — животное, которое
+ *     ЭТОТ охотник ВИДИТ в своих `contacts` (Perception 1.7), co-located и живое.
+ *     Функция обходит ТОЛЬКО contacts — НИКОГДА не сканирует всех животных мира и не
+ *     читает чужие цели (анти-чит: недоохота ЭМЕРДЖЕНТНА из локального восприятия).
+ *     Давление РАЗМАЗЫВАЕТСЯ по стаду смещением по СВОЕМУ eid (`hunter % n`): co-located
+ *     охотники с разными eid целят РАЗНЫХ особей — конвейер устранён без rng/min-eid
+ *     (закон №8). Пока охотник В ПУТИ к угодью (дичь ещё не видит) — targetEid=0, жертву
+ *     свяжет Encounters по прибытии (co-located резолвинг, D-029): застолблить особь
+ *     глобально нельзя, решает лишь то, кого он реально застанет.
+ *  2) ШТРАФ ПОГОНИ (`chaseCost = W.chase·dist·(1+CHASE_FATIGUE_FACTOR·fatigue)`):
+ *     дистанция до угодья (сумма edgeLen) со сцепкой усталости ДИСКОНТИРУЕТ sHunt.
+ *     co-located дичь (dist 0) — без штрафа; сбежавшее за много переходов стадо гнать
+ *     ДОРОГО ⇒ умеренно голодный охотник переключается на forage/ближнюю дичь, а не
+ *     гонит одну особь через карту (бесконечная погоня невыгодна). Причинно из СОСТОЯНИЯ
+ *     (дистанция+fatigue), не таймер/шанс (закон №2); по-настоящему голодный (высокий
+ *     hunger) всё же догонит — выживание впереди обхода (закон №1). Веса — balance/utility.
+ *
  * ── Детерминированный argmax (закон №8, D-020) ───────────────────────────────
  * Выбор — задача с наибольшей оценкой. При РАВЕНСТВЕ — МЕНЬШИЙ код TaskKind
  * (порядок enum: SLEEP<EAT<DRINK<FORAGE<HUNT<REST<FLEE<WORK<TRADE<ROB<SEARCH; SEARCH=10 —
@@ -87,7 +110,9 @@
  *   EAT/FORAGE/REST → target = текущая loc (на месте);
  *   SLEEP          → target = Home.loc (дом; если уже дома — на месте);
  *   DRINK          → ближайшая loc с водой по edgeLen (текущая, если с водой);
- *   HUNT           → ближайшая loc с живой дичью; targetEid = min-eid особь в ней;
+ *   HUNT           → ближайшее угодье (loc с живой дичью); targetEid = жертва ИЗ ЛИЧНОГО
+ *                    восприятия (contacts, рассредоточена по стаду смещением по своему
+ *                    eid), либо 0 пока в пути (Encounters свяжет co-located жертву);
  *   FLEE           → соседняя loc с наименьшим danger (tie — min id);
  *   WORK           → Job.workplace (рабочее место; если уже там — на месте);
  *   TRADE          → ближайшее поселение (Settlement+Position; если уже там — на месте);
@@ -139,6 +164,7 @@ import {
   W,
   FALLBACK_SCORE_FLOOR,
   REST_FATIGUE_FACTOR,
+  CHASE_FATIGUE_FACTOR,
   ROB_LOOT_BASE,
   ROB_LOOT_MERCHANT_BONUS,
   ROB_STRENGTH_WEAPON,
@@ -200,10 +226,10 @@ const WATER_LOCS: readonly LocationId[] = MAP.locations
   .filter((l) => l.water)
   .map((l) => l.id as LocationId);
 
-/** Кандидат охоты: ближайшая loc с живой дичью и конкретная жертва в ней. */
-interface HuntTarget {
+/** Ближайшая локация с дичью и стоимость пути до неё (для штрафа погони, задача A P-5). */
+interface HuntLoc {
   readonly loc: LocationId;
-  readonly eid: EntityId;
+  readonly cost: number;
 }
 
 /**
@@ -318,21 +344,61 @@ function fieldHasArtifact(inv: readonly InventoryEntry[] | undefined): boolean {
 }
 
 /**
- * Ближайшая цель охоты для наблюдателя в `loc`: локация с живой дичью, минимальная
- * по pathCost (tie — меньший id), и min-eid особь в ней (детерминированная жертва,
- * закон №8). `null`, если живой дичи нигде нет/недостижима — тогда HUNT не выбирается.
- * `animalsByLoc` — предпосчитанная на тик карта loc → отсортированные по eid особи.
+ * Ближайшая (по pathCost) локация из `targets` ВМЕСТЕ с её стоимостью пути (tie —
+ * меньший id). `undefined`, если ни одна не достижима. Отличается от `nearestLoc`
+ * тем, что возвращает и cost — он нужен как ДИСТАНЦИЯ для штрафа погони HUNT (P-5, A),
+ * чтобы не считать Дейкстру дважды. Обход по возрастанию id + строгое `<` — tie-break.
  */
-function nearestHunt(
-  loc: number,
-  animalLocs: readonly LocationId[],
-  animalsByLoc: ReadonlyMap<number, readonly EntityId[]>,
-): HuntTarget | null {
-  const targetLoc = nearestLoc(loc, animalLocs);
-  if (targetLoc === undefined) return null;
-  const herd = animalsByLoc.get(targetLoc) as readonly EntityId[];
-  // herd отсортирован по eid (queryEntities сортирует) ⇒ [0] = min eid (закон №8).
-  return { loc: targetLoc, eid: herd[0] as EntityId };
+function nearestLocCost(from: number, targets: readonly LocationId[]): HuntLoc | undefined {
+  let best: LocationId | undefined;
+  let bestCost = Infinity;
+  for (const t of targets) {
+    const c = pathCost(from, t);
+    if (c < bestCost) {
+      bestCost = c;
+      best = t;
+    }
+  }
+  return best === undefined ? undefined : { loc: best, cost: bestCost };
+}
+
+/**
+ * ЦЕЛЬ ОХОТЫ ИЗ ЛИЧНО ВОСПРИНЯТОГО (задача A закрытия P-5, АНТИ-ЧИТ, закон №1) —
+ * конкретная жертва-животное, которую ЭТОТ охотник ПЕРСОНАЛЬНО видит через свои
+ * `contacts` (Perception 1.7). Функция обходит ТОЛЬКО contacts наблюдателя, НИКОГДА
+ * не сканирует всех животных мира и не читает чужие цели: недоохота возникает
+ * ЭМЕРДЖЕНТНО из локального восприятия, а не из глобального знания численности.
+ *
+ * Среди воспринятых берутся ЖИВЫЕ co-located животные (`POS.loc === loc` — только их
+ * можно ударить: гейт боя Encounters 2.11 требует co-located+стоящих; приближающихся
+ * из соседней loc бить ещё нельзя). Список отсортирован по eid (contacts сорт. по
+ * target ⇒ порядок стабилен, закон №8). ДАВЛЕНИЕ РАЗМАЗЫВАЕТСЯ по стаду смещением по
+ * СОБСТВЕННОМУ eid охотника: `idx = hunter % n`. Так два co-located охотника с разными
+ * eid, видящие одно стадо (n>1), целят РАЗНЫХ особей — конвейерный ганг («все бьют
+ * min-eid») устранён БЕЗ rng и БЕЗ глобального min-eid (детерминизм, закон №8). Смещение
+ * по своему eid — это СОБСТВЕННОЕ знание охотника, не чит.
+ *
+ * Возвращает `0` (не-цель), если в поле зрения нет co-located живой дичи — тогда
+ * охотник ЕЩЁ В ПУТИ к локации дичи (targetEid=0), а конкретную жертву свяжет Encounters
+ * по прибытии (co-located резолвинг, D-029). Это НЕ ганг: пока он идёт, он никого не
+ * «застолбил» глобально; жертва определяется лишь тем, кого он реально застанет и увидит.
+ */
+function perceivedHuntTarget(world: SystemCtx['world'], hunter: EntityId, loc: number): EntityId {
+  const ecs = world.ecs;
+  const contacts = world.resources.get<readonly Contact[]>(CONTACTS_KEY, hunter);
+  if (contacts === undefined || contacts.length === 0) return 0 as EntityId;
+  const perceived: EntityId[] = [];
+  for (const c of contacts) {
+    const t = c.target;
+    if (!existsEntity(ecs, t)) continue;
+    if (!hasComponent(ecs, Animal, t) || !hasComponent(ecs, Alive, t)) continue;
+    if ((POS.loc[t] as number) !== loc) continue; // только co-located: только их можно бить
+    perceived.push(t); // contacts сорт. по target ⇒ perceived сорт. по возрастанию eid
+  }
+  if (perceived.length === 0) return 0 as EntityId;
+  // Рассредоточение по собственному eid: разные охотники → разные особи стада.
+  const idx = (hunter as number) % perceived.length;
+  return perceived[idx] as EntityId;
 }
 
 /**
@@ -507,20 +573,15 @@ export const TaskSelection: System = {
     const ecs = world.ecs;
     const night = isNight(tick);
 
-    // ── Живая дичь на этот тик: loc → отсортированные по eid особи (min eid = [0]).
-    // queryEntities сортирует по eid ⇒ бакеты уже отсортированы (закон №8).
-    const animalsByLoc = new Map<number, EntityId[]>();
-    for (const a of queryEntities(ecs, [Animal, Alive])) {
-      const l = POS.loc[a] as number;
-      let bucket = animalsByLoc.get(l);
-      if (bucket === undefined) {
-        bucket = [];
-        animalsByLoc.set(l, bucket);
-      }
-      bucket.push(a);
-    }
-    // Локации с дичью — по возрастанию id (детерминизм tie-break охоты, закон №8).
-    const animalLocs = Array.from(animalsByLoc.keys()).sort((a, b) => a - b) as LocationId[];
+    // ── Локации с живой дичью на этот тик (ТОЛЬКО loc-уровень «где бродит дичь», НЕ
+    // per-animal): множество loc, где есть Animal+Alive, по возрастанию id (детерминизм,
+    // закон №8). Это ЭКОЛОГИЧЕСКОЕ знание о локациях-угодьях (куда идти), НЕ выбор
+    // КОНКРЕТНОЙ жертвы — жертву охотник берёт ТОЛЬКО из личного восприятия
+    // (perceivedHuntTarget по contacts, анти-чит P-5/A). Скан всех животных здесь — лишь
+    // для набора локаций-целей движения, не для таргетинга особи.
+    const animalLocSet = new Set<number>();
+    for (const a of queryEntities(ecs, [Animal, Alive])) animalLocSet.add(POS.loc[a] as number);
+    const animalLocs = Array.from(animalLocSet).sort((a, b) => a - b) as LocationId[];
 
     // ── Локации поселений (цель TRADE, задача 2.6): loc каждой сущности-поселения
     // (Settlement+Position), по возрастанию id. Один раз до цикла NPC, как animalLocs.
@@ -590,12 +651,19 @@ export const TaskSelection: System = {
 
       // Цели-кандидаты (нужны и для оценок, и для записи выбранной задачи).
       const homeLoc = hasComponent(ecs, Home, eid) ? (HOME.loc[eid] as LocationId) : (loc as LocationId);
-      const hunt = nearestHunt(loc, notAvoided(animalLocs), animalsByLoc);
+      // Охота (задача A закрытия P-5): РАЗДЕЛены «куда идти» и «кого бить».
+      //  • huntLoc — ближайшая достижимая локация-угодье (loc-уровень) + дистанция до неё
+      //    (для штрафа погони). `undefined` ⇒ дичи нигде нет/недостижима ⇒ sHunt=−∞.
+      //  • huntEid — КОНКРЕТНАЯ жертва ИЗ ЛИЧНОГО ВОСПРИЯТИЯ (contacts, анти-чит),
+      //    рассредоточенная по стаду смещением по своему eid; `0`, пока охотник в пути
+      //    (co-located дичи ещё не видит — жертву свяжет Encounters по прибытии).
+      const huntLoc = nearestLocCost(loc, notAvoided(animalLocs));
+      const huntEid = perceivedHuntTarget(world, eid, loc);
       const drinkLoc = waterHere
         ? (loc as LocationId)
         : (nearestLoc(loc, notAvoided(WATER_LOCS)) ?? (loc as LocationId));
       const fleeLoc = safestNeighbor(loc, hasAvoids ? avoidLoc : undefined);
-      const gameAbund = hunt !== null ? getLocation(hunt.loc).game : 0;
+      const gameAbund = huntLoc !== undefined ? getLocation(huntLoc.loc).game : 0;
       // Трудоустройство (задача 2.4): носительство Job = «работает на поселение».
       // У безработных Job нет ⇒ WORK недоступен (score −∞), поведение не-Job NPC не
       // меняется. workplace — loc рабочего места (цель WORK); задан только при hasJob.
@@ -637,11 +705,18 @@ export const TaskSelection: System = {
       // возобновляемой не-мясной еды) охоту нельзя было унять весом game без слома
       // выживания людей (см. W.game 2.16c); теперь корень устранён контентом/кодом.
       // Стартовая формула; тонкий тюнинг — balance-analyst.
+      // СТОИМОСТЬ ПОГОНИ (задача A P-5, закон №2 — из СОСТОЯНИЯ, не таймер): штраф за
+      // ДИСТАНЦИЮ до угодья, усиленный усталостью. co-located дичь (cost 0) — без штрафа;
+      // дичь за много переходов — дорого ⇒ долгая КОНВЕЙЕРНАЯ погоня за сбежавшим стадом
+      // невыгодна, умеренно голодный переключается на forage/ближнюю дичь (эмерджентно).
+      const chaseCost =
+        huntLoc !== undefined ? W.chase * huntLoc.cost * (1 + CHASE_FATIGUE_FACTOR * fatigue) : 0;
       const sHunt =
-        hunt !== null
+        huntLoc !== undefined
           ? (W.hunger + gameAbund * W.game + survival * W.skill) * hunger -
             fear * W.fear -
-            (night ? W.nightHunt : 0)
+            (night ? W.nightHunt : 0) -
+            chaseCost
           : -Infinity;
       const sFlee = W.fleeFear * fear;
       const sForage = FALLBACK_SCORE_FLOOR + W.forageBase * locData.forage;
@@ -708,9 +783,11 @@ export const TaskSelection: System = {
           targetLoc = drinkLoc;
           break;
         case TaskKind.HUNT:
-          // hunt!==null гарантировано: иначе sHunt=-∞ и HUNT не выбран.
-          targetLoc = (hunt as HuntTarget).loc;
-          targetEid = (hunt as HuntTarget).eid;
+          // huntLoc!==undefined гарантировано: иначе sHunt=−∞ и HUNT не выбран. Цель
+          // движения — угодье; жертва (targetEid) — из личного восприятия (0, пока в
+          // пути ⇒ Encounters свяжет co-located жертву по прибытии, D-029).
+          targetLoc = (huntLoc as HuntLoc).loc;
+          targetEid = huntEid;
           break;
         case TaskKind.FLEE:
           targetLoc = fleeLoc;
