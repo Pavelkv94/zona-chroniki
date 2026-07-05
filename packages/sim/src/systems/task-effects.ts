@@ -40,22 +40,42 @@
  *            есть REST).
  *  • REST  → fatigue −= REST_RECOVERY_PER_TICK (< SLEEP: привал слабее сна) в ЛЮБОЙ
  *            локации, кламп 0.
- *  • FORAGE→ hunger −= FORAGE_RECOVERY_PER_TICK * loc.forage (подножный корм,
- *            обилие 0..1; в бедных локациях почти ноль), кламп 0. Собранное съедено
- *            на месте, в инвентарь не кладётся — источник СРЕДА (закон №3 ок).
+ *  • FORAGE→ ДОБЫВАЕТ физический предмет `forage_food` из ОБИЛИЯ локации в инвентарь
+ *            (P-5/5.2): голод больше НЕ гасится напрямую — фуражир собирает раститель-
+ *            ную еду, а EAT её потом ест (чище/физичнее: масса проходит через леджер).
+ *            Выход за тик = `floor(FORAGE_FOOD_YIELD_PER_ABUNDANCE × обилие_патча)`
+ *            (истощённый/мёртвый патч → 0, «пусто→ноль», закон №1/№2). Обилие —
+ *            ВОЗОБНОВЛЯЕМЫЙ истощаемый ресурс (см. ниже «Обилие среды»). Источник
+ *            ФИЗИЧЕН — растительность угодья (закон №3). qty>0 ⇒ ЛЕДЖЕР
+ *            `item/harvested{source:'forage'}` (D-045).
  *  • HUNT  → БЕЗ восстановления здесь: мясо даёт Encounter (1.10) через труп/разделку.
  *  • FLEE  → БЕЗ восстановления: это только движение (Movement).
  *
- * ── События: ТОЛЬКО ЛЕДЖЕР расхода еды (D-045, ретрофит 2.0) ──────────────────
- * Изменение Needs и восстановление из СРЕДЫ (DRINK/FORAGE/SLEEP/REST) события НЕ
- * порождают: это состояние, которое нисходящие системы читают через компоненты
- * (закон №6 не требует события без адресата-подписчика). НО расход ЕДЫ при EAT
- * ФИЗИЧЕСКИ уничтожает предмет (уменьшает Σ inventory мира) — а любое изменение
- * массы замкнутой экономики обязано быть видимо леджеру (закон №3, D-045). Поэтому
- * EAT публикует `item/consumed {who, item, qty:1, reason:'eat'}` с `causedBy =
- * Task.causeEvent` (задача, приведшая к еде; штамп D-030, или null). Механику
- * расхода это НЕ меняет — только делает её видимой EconomyInvariant. Прочие эффекты
- * массу не трогают (вода/корм — из среды, не предмет) ⇒ остаются без событий.
+ * ── Обилие среды: ВОЗОБНОВЛЯЕМЫЙ истощаемый ресурс (закон №1/№2/№8) ────────────
+ * Собирательство не берёт бесконечную еду из пустоты: у КАЖДОЙ локации есть ТЕКУЩЕЕ
+ * обилие (0..base, где base = `loc.forage` из map.json = ёмкость среды). Фуражировка
+ * ИСТОЩАЕТ патч (−`FORAGE_DEPLETION_PER_FOOD` за каждую добытую единицу), а со временем
+ * он ДЕТЕРМИНИРОВАННО отрастает к base (+`FORAGE_REGEN_PER_TICK`/тик). Так возникает
+ * ёмкость: несколько фуражиров конкурируют за патч (по eid — детерминизм), выкачанный
+ * патч даёт ноль до восстановления (связь с 5.3 «приток по ёмкости»). ТЕКУЩЕЕ обилие
+ * хранится как СЕРИАЛИЗУЕМЫЙ разрежённый массив `[loc, abundance]` (только ИСТОЩЁННЫЕ
+ * патчи, base — по умолчанию) на singleton-носителе `WorldClock` (это «среда-часы»
+ * мира; живой eid ⇒ переживает снапшот, resume-safe, закон №8). Регенерация идёт раз в
+ * тик по разрежённому набору истощённых патчей (их мало ⇒ дёшево, не O(n²)). Нет
+ * носителя WorldClock (голый createSimWorld без worldgen) ⇒ среды нет ⇒ FORAGE не
+ * исполняется (пустой мир не оживает — 481914ae цел). rng НЕ участвует (закон №2).
+ *
+ * ── События: ЛЕДЖЕР массы EAT (расход) и FORAGE (добыча) (D-045, закон №3) ─────
+ * Изменение Needs и восстановление из СРЕДЫ (DRINK/SLEEP/REST) события НЕ порождают:
+ * это состояние, которое нисходящие системы читают через компоненты (закон №6 не
+ * требует события без адресата-подписчика). НО любое изменение Σ массы замкнутой
+ * экономики обязано быть видимо леджеру (закон №3, D-045): EAT ФИЗИЧЕСКИ уничтожает
+ * съеденную единицу → `item/consumed {who, item, qty:1, reason:'eat'}`; FORAGE ФИЗИЧЕСКИ
+ * добывает еду из среды → `item/harvested {who, item:'forage_food', qty, source:'forage'}`.
+ * Обоим `causedBy = Task.causeEvent` (задача, приведшая к действию; штамп D-030, или
+ * null). EconomyInvariant видит массу через оба события. Изменение ОБИЛИЯ патча массу
+ * инвентарей НЕ трогает (обилие — свойство СРЕДЫ, не предмет) ⇒ отдельного события не
+ * требует; учтена лишь добытая масса `forage_food`.
  *
  * ── Детерминизм (закон №8) ────────────────────────────────────────────────────
  * rng НЕ используется: восстановление чисто арифметическое (закон №2 — случайность
@@ -65,28 +85,47 @@
  * инвентарь (ResourceStore) сериализуются ⇒ resume после load продолжает тождественно.
  */
 
-import type { EntityId, EventId } from '@zona/shared';
+import type { EntityId, EventId, ItemId, LocationId } from '@zona/shared';
 import type { System, SystemCtx } from '../core/system';
+import type { ResourceStore } from '../core/world';
 import { queryEntities, hasComponent } from '../core/ecs';
-import { Position, Needs, Task, Home, Human, Alive, TaskKind } from '../core/components';
+import { Position, Needs, Task, Home, Human, Alive, WorldClock, TaskKind } from '../core/components';
 import { getLocation, getItem } from '../data/index';
-import type { LocationId } from '@zona/shared';
 import {
   NEED_MAX,
   SLEEP_RECOVERY_PER_TICK,
   REST_RECOVERY_PER_TICK,
   DRINK_RECOVERY_PER_TICK,
-  FORAGE_RECOVERY_PER_TICK,
 } from '../balance/needs';
+import {
+  FORAGE_FOOD_YIELD_PER_ABUNDANCE,
+  FORAGE_DEPLETION_PER_FOOD,
+  FORAGE_REGEN_PER_TICK,
+} from '../balance/ecology';
 
 /** Ключ ResourceStore со списком инвентаря (D-007); форма — как пишет worldgen 1.3. */
 const INVENTORY_KEY = 'inventory';
+
+/**
+ * Ключ ResourceStore с ТЕКУЩИМ обилием собирательства по локациям (P-5/5.2). Живёт
+ * на singleton-носителе WorldClock (среда мира). Значение — РАЗРЕЖЁННЫЙ массив пар
+ * `[loc, abundance]`, отсортированный по loc, ТОЛЬКО для ИСТОЩЁННЫХ патчей (обилие <
+ * base); отсутствие пары ⇒ патч на базовом обилии `loc.forage` (полон). Массив (не
+ * Map) — требование сериализации (D-013); сорт. по loc — детерминизм (закон №8).
+ */
+const FORAGE_ABUNDANCE_KEY = 'forageAbundance';
+
+/** Строковый id добываемой растительной еды (контент items.json, закон №10). */
+const FORAGE_FOOD_ITEM = 'forage_food' as ItemId;
 
 /** Единица инвентаря (та же форма, что пишет worldgen 1.3, сорт. по item). */
 interface InventoryEntry {
   readonly item: string;
   readonly qty: number;
 }
+
+/** Пара «локация → текущее обилие» в сериализуемом массиве обилия (сорт. по loc). */
+type AbundanceEntry = readonly [loc: number, abundance: number];
 
 // ── Типизированные SoA-колонки ───────────────────────────────────────────────
 const POS = Position as unknown as { readonly loc: Uint32Array; readonly dest: Uint32Array };
@@ -163,8 +202,66 @@ function eatOne(
 }
 
 /**
+ * Добавляет `qty` единиц предмета `item` в инвентарь, СОХРАНЯЯ сортировку по item
+ * (D-007) и СЛИВАЯ с существующей записью того же item (никаких дублей — иначе
+ * фуражир накопил бы тысячи отдельных записей forage_food, раздув инвентарь/снапшот).
+ * Возвращает НОВЫЙ массив (иммутабельность, как eatOne). Вставка нового item — в
+ * позицию, удерживающую возрастающий порядок item (строгое `<`).
+ */
+function addItemSorted(
+  inv: readonly InventoryEntry[],
+  item: string,
+  qty: number,
+): InventoryEntry[] {
+  const next: InventoryEntry[] = [];
+  let done = false;
+  for (const e of inv) {
+    if (e.item === item) {
+      next.push({ item, qty: e.qty + qty }); // слияние с существующей записью
+      done = true;
+    } else {
+      if (!done && item < e.item) {
+        next.push({ item, qty }); // вставка перед первым бо́льшим item (сорт. сохранён)
+        done = true;
+      }
+      next.push(e);
+    }
+  }
+  if (!done) next.push({ item, qty }); // item больше всех имеющихся — в конец
+  return next;
+}
+
+/** Читает разрежённый массив обилия с носителя WorldClock в Map<loc, abundance>. */
+function readAbundance(resources: ResourceStore, clockEid: EntityId): Map<number, number> {
+  const arr = resources.get<readonly AbundanceEntry[]>(FORAGE_ABUNDANCE_KEY, clockEid) ?? [];
+  const m = new Map<number, number>();
+  for (const [loc, a] of arr) m.set(loc, a);
+  return m;
+}
+
+/**
+ * Пишет обилие обратно на WorldClock как ОТСОРТИРОВАННЫЙ по loc массив пар (закон
+ * №8). Пустая карта ⇒ УДАЛЯЕМ запись ресурса (не пишем `[]`): «нет истощённых патчей»
+ * = отсутствие ключа, что тождественно исходному состоянию до любой фуражировки
+ * (стабильность снапшота/хэша; resume-safe).
+ */
+function writeAbundance(resources: ResourceStore, clockEid: EntityId, m: Map<number, number>): void {
+  if (m.size === 0) {
+    resources.delete(FORAGE_ABUNDANCE_KEY, clockEid);
+    return;
+  }
+  const out: AbundanceEntry[] = [];
+  for (const loc of Array.from(m.keys()).sort((a, b) => a - b)) {
+    out.push([loc, m.get(loc) as number]);
+  }
+  resources.set<readonly AbundanceEntry[]>(FORAGE_ABUNDANCE_KEY, clockEid, out);
+}
+
+/**
  * Система TaskEffects (`every: 1`). Для каждого стоящего у цели живого человека с
- * задачей исполняет её эффект: восстанавливает нужду и (EAT) расходует еду.
+ * задачей исполняет её эффект: восстанавливает нужду, (EAT) расходует еду, (FORAGE)
+ * добывает `forage_food` из обилия локации. Раз в тик регенерирует истощённые патчи
+ * обилия к базовому (ёмкость среды). Детерминирована, rng не использует.
  */
 export const TaskEffects: System = {
   name: 'TaskEffects',
@@ -172,6 +269,31 @@ export const TaskEffects: System = {
   update(ctx: SystemCtx): void {
     const { world, bus } = ctx;
     const ecs = world.ecs;
+    const resources = world.resources;
+
+    // ── Обилие среды: носитель = singleton WorldClock (P-5/5.2) ────────────────
+    // Обилие собирательства живёт на WorldClock (среда-часы мира). Нет носителя
+    // (голый createSimWorld без worldgen) ⇒ среды нет ⇒ FORAGE не исполняется, а
+    // пустой мир не оживает (голден 481914ae цел).
+    const clocks = queryEntities(ecs, [WorldClock]);
+    const clockEid: EntityId | undefined = clocks.length > 0 ? (clocks[0] as EntityId) : undefined;
+    let abundance: Map<number, number> | undefined;
+    let abundanceDirty = false;
+    if (clockEid !== undefined) {
+      abundance = readAbundance(resources, clockEid);
+      // РЕГЕНЕРАЦИЯ (раз в тик, по разрежённому набору истощённых патчей — дёшево):
+      // каждый истощённый патч подтягивается к base; достигнув base — снимается из
+      // карты (снова «полон»). Детерминированный обход по возрастанию loc (закон №8).
+      if (abundance.size > 0) {
+        for (const loc of Array.from(abundance.keys()).sort((a, b) => a - b)) {
+          const base = getLocation(loc as LocationId).forage;
+          const grown = Math.min(base, (abundance.get(loc) as number) + FORAGE_REGEN_PER_TICK);
+          if (grown >= base) abundance.delete(loc);
+          else abundance.set(loc, grown);
+        }
+        abundanceDirty = true;
+      }
+    }
 
     for (const eid of queryEntities(ecs, [Human, Alive, Task, Needs])) {
       // Исполняем ТОЛЬКО когда сущность СТОИТ у цели (D-019): dest === loc.
@@ -230,12 +352,31 @@ export const TaskEffects: System = {
           break;
         }
         case TaskKind.FORAGE: {
-          const forage = getLocation(loc as LocationId).forage;
-          NEED.hunger[eid] = clamp(
-            (NEED.hunger[eid] as number) - FORAGE_RECOVERY_PER_TICK * forage,
-            0,
-            NEED_MAX,
+          // Собирательство добывает физический forage_food из ОБИЛИЯ патча (закон №3).
+          // Нет носителя WorldClock (среды) ⇒ нечего собирать (пустой мир не оживает).
+          if (clockEid === undefined || abundance === undefined) break;
+          const base = getLocation(loc as LocationId).forage;
+          const a = abundance.get(loc) ?? base; // нет записи ⇒ патч полон (base)
+          const yieldQty = Math.floor(FORAGE_FOOD_YIELD_PER_ABUNDANCE * a);
+          if (yieldQty <= 0) break; // истощённый/мёртвый патч — ничего (пусто→ноль)
+
+          // Кладём добытое в инвентарь (слияние, сорт. по item) — масса пришла в мир.
+          const inv = resources.get<readonly InventoryEntry[]>(INVENTORY_KEY, eid) ?? [];
+          resources.set<readonly InventoryEntry[]>(
+            INVENTORY_KEY,
+            eid,
+            addItemSorted(inv, FORAGE_FOOD_ITEM, yieldQty),
           );
+          // ЛЕДЖЕР (D-045, закон №3): добытая из среды масса видима EconomyInvariant.
+          // Причина — задача FORAGE, приведшая к сбору (штамп Task.causeEvent, D-030).
+          bus.publish({
+            type: 'item/harvested',
+            causedBy: causeOrNull(TSK.causeEvent[eid] as number),
+            payload: { who: eid, item: FORAGE_FOOD_ITEM, qty: yieldQty, source: 'forage' },
+          });
+          // ИСТОЩЕНИЕ патча пропорц. добыче (ёмкость среды): a может уйти к 0.
+          abundance.set(loc, Math.max(0, a - yieldQty * FORAGE_DEPLETION_PER_FOOD));
+          abundanceDirty = true;
           break;
         }
         // HUNT/FLEE — без восстановления здесь (мясо даёт Encounter 1.10; FLEE —
@@ -243,6 +384,14 @@ export const TaskEffects: System = {
         default:
           break;
       }
+    }
+
+    // Единая запись обилия после регенерации + истощений этого тика (сорт. по loc;
+    // пустая карта ⇒ ключ снимается — стабильность снапшота). Пишем ТОЛЬКО при
+    // изменениях (нет фуражировки и нет истощённых патчей ⇒ ресурс не трогаем —
+    // важно для голдена: пока обилие не тронуто, снапшот тождествен исходному).
+    if (clockEid !== undefined && abundanceDirty && abundance !== undefined) {
+      writeAbundance(resources, clockEid, abundance);
     }
   },
 };

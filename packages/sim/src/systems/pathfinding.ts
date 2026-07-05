@@ -122,6 +122,66 @@ export function shortestPath(
 }
 
 /**
+ * БЛИЖАЙШИЙ (по сумме весов рёбер = дистанции Дейкстры) узел, удовлетворяющий
+ * `predicate`, достижимый из `from`. Возвращает `undefined`, если ни один
+ * достижимый узел не проходит предикат. Используется экологией (Animals 1.9):
+ * поиск ближайшей ВОДНОЙ локации при жажде и ближайшего КОРМНОГО угодья при
+ * голоде — миграция из СОСТОЯНИЯ нужды (закон №2), а не по таймеру/рандому.
+ *
+ * Если `from` сам проходит предикат — возвращается `from` (дистанция 0), и
+ * последующий `firstStep(from, from)` даст `undefined` (шаг не нужен: животное
+ * уже там, где хотело). Детерминизм (закон №8): полный Дейкстра (веса > 0),
+ * затем выбор минимальной дистанции строгим `<` при обходе узлов ПО ВОЗРАСТАНИЮ
+ * id ⇒ при равной дистанции берётся МЕНЬШИЙ id (стабильный tie-break).
+ */
+export function nearestWhere(
+  graph: WeightedGraph,
+  from: number,
+  predicate: (node: number) => boolean,
+): number | undefined {
+  if (!inBounds(graph, from)) return undefined;
+
+  const n = graph.nodeCount;
+  const dist = new Array<number>(n).fill(Infinity);
+  const settled = new Array<boolean>(n).fill(false);
+  dist[from] = 0;
+
+  // Полный Дейкстра (улаживаем ВСЕ достижимые узлы — цели нет, ищем ближайшую
+  // подходящую по предикату). Граф мал (10 узлов) ⇒ O(V²) дёшево (D-006).
+  for (let iter = 0; iter < n; iter++) {
+    let u = -1;
+    let best = Infinity;
+    for (let v = 0; v < n; v++) {
+      if (!settled[v] && (dist[v] as number) < best) {
+        best = dist[v] as number;
+        u = v;
+      }
+    }
+    if (u === -1) break; // остаток недостижим
+    settled[u] = true;
+    for (const w of graph.neighbors(u)) {
+      if (!inBounds(graph, w) || settled[w]) continue;
+      const nd = (dist[u] as number) + graph.weight(u, w);
+      if (nd < (dist[w] as number)) dist[w] = nd;
+    }
+  }
+
+  // Ближайший узел, проходящий предикат: min dist, tie-break по МЕНЬШЕМУ id
+  // (обход по возрастанию id + строгое `<`).
+  let bestNode: number | undefined;
+  let bestDist = Infinity;
+  for (let v = 0; v < n; v++) {
+    if (!Number.isFinite(dist[v])) continue;
+    if (!predicate(v)) continue;
+    if ((dist[v] as number) < bestDist) {
+      bestDist = dist[v] as number;
+      bestNode = v;
+    }
+  }
+  return bestNode;
+}
+
+/**
  * Первый шаг кратчайшего пути `from → to` — узел сразу после `from`.
  * Возвращает `undefined`, если `from === to` (шаг не нужен) или `to` недостижим.
  * Это то, что Movement выставляет в `Position.dest` при departure.

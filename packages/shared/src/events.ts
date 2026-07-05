@@ -82,9 +82,12 @@ export type ItemConsumeReason = 'eat' | 'combat' | 'upkeep' | 'production';
  * мясо с туши убитого животного (Encounters, Фаза 1). `'anomaly'` — артефакт,
  * РОЖДЁННЫЙ аномальным полем по накоплению заряда (ArtifactSpawn 2.9, D-054): масса
  * возникает В МИРЕ (наземный лут поля) из физического источника — самого поля.
+ * `'forage'` — растительная еда (`forage_food`), собранная фуражиром из ОБИЛИЯ
+ * локации (TaskEffects, P-5/5.2): масса возникает из СРЕДЫ (растительность угодья),
+ * а не из воздуха; обилие — возобновляемый истощаемый ресурс (balance/ecology).
  * APPEND-ONLY по мере новых добывающих источников.
  */
-export type ItemHarvestSource = 'carcass' | 'anomaly';
+export type ItemHarvestSource = 'carcass' | 'anomaly' | 'forage';
 
 /**
  * Уровень серьёзности пересечённого порога нужды. Пока единственный —

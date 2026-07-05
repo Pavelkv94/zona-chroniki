@@ -68,11 +68,35 @@
  * (`move/departed.causedBy = spottedEvent`)» замкнута; при `spottedEvent === 0` (нет
  * id) — `null`. Стадность/приплод — законный корень (`null`) насовсем.
  *
+ * ── ПОРЯДОК: ПАСТЬБА/ПИТЬЁ ВСЕГДА ПЕРЕД ДВИЖЕНИЕМ (ретрофит P-5) ───────────────
+ * ⚠️ P-5 (фактический убийца стад): раньше БЕГСТВО делало `continue` ДО пастьбы, и
+ * затравленный охотником грейзер (олень бегает между двумя взаимно-безопасными
+ * локациями, спасаясь) НИКОГДА не ел и не пил — гиб от истощения ДАЖЕ СТОЯ У ВОДЫ. Не
+ * «безводность угодий» была корнем, а то, что реакция-движение съедала шаг пастьбы.
+ * Фикс: у СТОЯЩЕГО животного пастьба/питьё применяются ПЕРВЫМИ (каждый due-тик), и
+ * лишь ПОТОМ решается движение (бегство/водопой/стадность). Так животное успевает
+ * щипнуть корма/глотнуть воды перед рывком — истощение при постоянном бегстве снято.
+ *
+ * ── ВОДОПОЙ-МИГРАЦИЯ травоядных (P-5, закон №2 — из состояния жажды) ──────────
+ * Стадо в КОРМНОМ, но БЕЗВОДНОМ угодье (Тёмная долина: forage 0.4, water=false) без
+ * миграции копило бы жажду (пить негде) → гибель. Фикс: у ГРЕЙЗЕРА (species.grazes,
+ * олень/кабан) при `thirst >= ANIMAL_SEEK_WATER_THIRST` в БЕЗВОДНОЙ локации —
+ * departure к БЛИЖАЙШЕЙ водной локации (`nearestWhere(water)` + `firstStep`, Дейкстра
+ * по графу карты, детерминированно; tie — меньший id). Питьё БЫСТРОЕ (ANIMAL_DRINK
+ * ×cadence слакает жажду с порога до низа за ОДИН заход, см. balance): животное
+ * напивается и стадностью возвращается к стаду — переселения к воде насовсем и
+ * осцилляции «пришёл-глотнул-ушёл» НЕТ (после захода жажда далеко ниже порога, до
+ * следующего набега — сотни тиков пастьбы в родном угодье). Приоритет ДВИЖЕНИЯ:
+ * бегство (fear>need) > водопой (жажда) > стадность. Хищники (grazes=false) в эту
+ * ветку НЕ входят — их драйв (pack/noise/solo) иных систем. departure водопоя —
+ * корень цепочки (эндогенный экологический драйв, causedBy=null). Порог — в
+ * balance/ecology (закон №7); rng не используется (порог × кратчайший путь).
+ *
  * ── СТАДНОСТЬ ────────────────────────────────────────────────────────────────
  * Отставшее (не в мажоритарной локации стада) стоящее животное departure'ит ПЕРВЫМ
  * шагом к локации, где сейчас БОЛЬШИНСТВО его стада (перепись текущего тика; tie —
  * меньший id локации). Детерминированно и просто; сойдясь, стадо стоит вместе.
- * Бегство приоритетнее стадности.
+ * Приоритет: бегство > водопой > стадность (стадность — низший драйв).
  *
  * ── РАЗМНОЖЕНИЕ — ПРИЧИННОЕ, БЕЗ ХРАНИМОГО ТАЙМЕРА (закон №2/№8) ───────────────
  * «Племенной тик» стада — ДЕТЕРМИНИРОВАННАЯ функция (tick, herd, species), БЕЗ
@@ -121,12 +145,13 @@ import {
 } from '../core/ecs';
 import { Animal, Position, Needs, Health, Alive, Human } from '../core/components';
 import { getSpecies, getLocation, neighbors, SPECIES } from '../data/index';
-import { MAP_GRAPH, firstStep } from './pathfinding';
+import { MAP_GRAPH, firstStep, nearestWhere } from './pathfinding';
 import { MIN_TRAVEL_TICKS } from '../balance/movement';
 import { NEED_MAX, HEALTH_MAX } from '../balance/needs';
 import {
   ANIMAL_GRAZE_HUNGER_PER_TICK,
   ANIMAL_DRINK_THIRST_PER_TICK,
+  ANIMAL_SEEK_WATER_THIRST,
   REPRO_FORAGE_MIN,
   REPRO_MIN_HERD_IN_LOC,
   ANIMAL_NEWBORN_NEED,
@@ -212,6 +237,11 @@ export function isBreedingTick(tick: number, herd: number, gestationTicks: numbe
   const phase = herdPhaseTick(herd, gestationTicks);
   if (tick < phase) return false;
   return (tick - phase) % gestationTicks === 0;
+}
+
+/** Предикат «локация водная» (`loc.water === true`) — цель водопой-миграции. */
+function isWaterLoc(loc: number): boolean {
+  return getLocation(loc as LocationId).water;
 }
 
 /** Соседняя локация с наименьшим `danger` (tie — меньший id); undefined если соседей нет. */
@@ -354,9 +384,31 @@ export const Animals: System = {
       if ((POS.dest[eid] as number) !== loc) continue;
 
       const species = getSpecies(ANIM.species[eid] as number);
+      const locData = getLocation(loc as LocationId);
 
-      // БЕГСТВО приоритетнее: пугливый + живой человек в contacts → уходим в
-      // безопаснейшего соседа. Departure заканчивает обработку этого животного.
+      // ПАСТЬБА/ПИТЬЁ (стоит) — ВСЕГДА, ДО решения о движении (ретрофит P-5). Даже
+      // животное, которое сейчас рванёт БЕГСТВОМ, успевает щипнуть корма/глотнуть воды
+      // на месте перед рывком. Иначе затравленный грейзер (олень, вечно бегущий от
+      // охотника между двумя взаимно-безопасными локациями) НИКОГДА не ел бы и гиб от
+      // истощения ДАЖЕ СТОЯ У ВОДЫ — фактический убийца стад в P-5 (не «безводность»
+      // угодий, а то, что бегство `continue`-ило ДО пастьбы). Корм из среды локации
+      // (закон №3), вода если есть; ставки ×ANIMALS_CADENCE (balance/ecology, закон №7).
+      NEED.hunger[eid] = clamp(
+        (NEED.hunger[eid] as number) - ANIMAL_GRAZE_HUNGER_PER_TICK * locData.forage * ANIMALS_CADENCE,
+        0,
+        NEED_MAX,
+      );
+      if (locData.water) {
+        NEED.thirst[eid] = clamp(
+          (NEED.thirst[eid] as number) - ANIMAL_DRINK_THIRST_PER_TICK * ANIMALS_CADENCE,
+          0,
+          NEED_MAX,
+        );
+      }
+
+      // БЕГСТВО — ВЫСШИЙ приоритет ДВИЖЕНИЯ (fear>need, как у людей): пугливый + живой
+      // человек в contacts → уходим в безопаснейшего соседа. Departure заканчивает
+      // обработку этого животного (пастьба/питьё этого шага уже применены выше).
       if (species.flees) {
         const spottedEvent = humanThreatSpottedEvent(world, eid);
         if (spottedEvent >= 0) {
@@ -373,22 +425,33 @@ export const Animals: System = {
         }
       }
 
-      // ПАСТЬБА (стоит, не бежит): корм из среды локации, вода если есть.
-      const locData = getLocation(loc as LocationId);
-      NEED.hunger[eid] = clamp(
-        (NEED.hunger[eid] as number) - ANIMAL_GRAZE_HUNGER_PER_TICK * locData.forage * ANIMALS_CADENCE,
-        0,
-        NEED_MAX,
-      );
-      if (locData.water) {
-        NEED.thirst[eid] = clamp(
-          (NEED.thirst[eid] as number) - ANIMAL_DRINK_THIRST_PER_TICK * ANIMALS_CADENCE,
-          0,
-          NEED_MAX,
-        );
+      // ── ПРИОРИТЕТ ДВИЖЕНИЯ у ТРАВОЯДНЫХ (грейзеров): вода > стадность ─────────
+      // Иерархия ДЕТЕРМИНИРОВАННАЯ (не утилита с рандомом), из состояния нужд
+      // (закон №2). Жажда приоритетна — обезвоживание убивает быстрее
+      // (THIRST_PER_TICK > HUNGER_PER_TICK), а голод гасит пастьба ЭТОГО шага
+      // (graze-first, выше). Хищники (grazes=false) сюда не входят:
+      // их драйв (pack/noise/solo) — иных систем; здесь только прей-экология.
+      // ВОДОПОЙ (грейзер, приоритет ВЫШЕ стадности): в БЕЗВОДНОЙ локации при
+      // пересечении порога жажды — короткий набег к БЛИЖАЙШЕЙ воде. Питьё быстрое
+      // (ANIMAL_DRINK ×cadence слакает жажду за один заход, см. balance) ⇒ на воде
+      // животное напивается и стадностью возвращается к стаду — переселения насовсем
+      // и осцилляции нет (жажда далеко ниже порога после захода). Нужду читаем ПОСЛЕ
+      // пастьбы этого шага. Хищники (grazes=false) сюда не входят — их драйв иных систем.
+      if (species.grazes === true && !locData.water) {
+        if ((NEED.thirst[eid] as number) >= ANIMAL_SEEK_WATER_THIRST) {
+          const target = nearestWhere(MAP_GRAPH, loc, isWaterLoc);
+          if (target !== undefined) {
+            const step = firstStep(MAP_GRAPH, loc, target);
+            // Водопой-миграция — корень цепочки (эндогенный экологический драйв, №2).
+            if (step !== undefined) {
+              departTo(bus, eid, loc as LocationId, step as LocationId, null);
+              continue;
+            }
+          }
+        }
       }
 
-      // СТАДНОСТЬ: отставший тянется к мажоритарной локации стада (первый шаг).
+      // СТАДНОСТЬ (низший драйв): отставший тянется к мажоритарной локации стада.
       const herd = ANIM.herd[eid] as number;
       const locCounts = census.herdLoc.get(herd) as Map<number, number>;
       const majLoc = herdMajorityLoc(locCounts);

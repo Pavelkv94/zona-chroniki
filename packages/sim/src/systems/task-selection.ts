@@ -42,10 +42,12 @@
  *   SLEEP  = W.fatigue·fatigue + (night?W.night:0) + safety·W.safe
  *   EAT    = (W.hunger + W.food)·hunger    (ТОЛЬКО если в инвентаре есть еда)
  *   DRINK  = W.thirst·thirst + waterHere·W.water
- *   HUNT   = W.hunger·hunger + gameAbund·W.game + survival·W.skill
- *            − fear·W.fear − (night?W.nightHunt:0)  (ТОЛЬКО если есть достижимая дичь)
+ *   HUNT   = (W.hunger + gameAbund·W.game + survival·W.skill)·hunger
+ *            − fear·W.fear − (night?W.nightHunt:0)  (ТОЛЬКО если есть достижимая дичь;
+ *            вклад «удобства» охоты домножен на голод — сытый не охотится, 5.2)
  *   FLEE   = W.fleeFear·fear
- *   FORAGE = FALLBACK_SCORE_FLOOR + W.forageBase·forageAbund   (fallback, всегда >0)
+ *   FORAGE = FALLBACK_SCORE_FLOOR + W.forageBase·forageAbund   (fallback; ДОБЫВАЕТ
+ *            forage_food из среды в TaskEffects, 5.2 — не мгновенный эффект)
  *   REST   = W.restBase + W.fatigue·fatigue·REST_FATIGUE_FACTOR (fallback, всегда >0)
  *   WORK   = W.work·safety·max(0, 1−maxNeed)   (ТОЛЬКО носитель Job И день, задача 2.4)
  *   TRADE  = W.trade·safety·max(0, 1−maxNeed)  (ТОЛЬКО повод в инвентаре И день, задача 2.6)
@@ -626,11 +628,18 @@ export const TaskSelection: System = {
       // голоде бонус W.food поднимает EAT над HUNT (доесть запас раньше охоты).
       const sEat = foodInInv ? (W.hunger + W.food) * hunger : -Infinity;
       const sDrink = W.thirst * thirst + waterHere * W.water;
+      // HUNT (P-5/5.2 калибровка FORAGE↔HUNT): тяга к охоте ПРИЧИННО управляется
+      // ГОЛОДОМ — «удобство» охоты (обилие дичи gameAbund, навык survival) даёт вклад
+      // ТОЛЬКО когда есть нужда в еде (домножено на hunger). СЫТЫЙ (hunger≈0) ⇒ sHunt→
+      // −fear−night ≤ 0 < sForage ⇒ предпочтёт СОБИРАТЕЛЬСТВО (растит. еда из среды,
+      // 5.2) охоте: давление на стада падает, охота становится ДОПОЛНЕНИЕМ (голоден и
+      // нет запаса → охотится; с запасом → EAT перебивает HUNT, D-034). До 5.2 (без
+      // возобновляемой не-мясной еды) охоту нельзя было унять весом game без слома
+      // выживания людей (см. W.game 2.16c); теперь корень устранён контентом/кодом.
+      // Стартовая формула; тонкий тюнинг — balance-analyst.
       const sHunt =
         hunt !== null
-          ? W.hunger * hunger +
-            gameAbund * W.game +
-            survival * W.skill -
+          ? (W.hunger + gameAbund * W.game + survival * W.skill) * hunger -
             fear * W.fear -
             (night ? W.nightHunt : 0)
           : -Infinity;

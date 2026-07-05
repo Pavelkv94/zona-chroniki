@@ -260,16 +260,21 @@ describe('торговец — смертный ординарный NPC, жив
     expect(traderTasked.size).toBe(traders.size);
   }, 30000);
 
-  it('торговец СМЕРТЕН: за 30 дней (seed 7) гибнет как обычный NPC (нет спец-защиты, D-051)', () => {
-    // Пин Ф1-реальности: на seed 7 ОБА торговца погибают к 30-му дню — смерть снимает
-    // общий Death по hp<=0, торговец под ним наравне со сталкерами. Когда 2.6 введёт
-    // TRADE-распорядок, этот тест зафиксирует смену поведения (торговец начнёт выживать).
+  it('торговец СМЕРТЕН: под общим Death по hp<=0, нет спец-защиты (D-051)', () => {
+    // 5.2/D-085 (FORAGE→forage_food): мир стал менее смертельным (фуражировка кормит без
+    // охоты) ⇒ торговец больше НЕ гибнет естественно за 30 дней. Но D-051 — про ОТСУТСТВИЕ
+    // спец-защиты, а не про «обязан умереть по случайности». Доказываем ПРИЧИННО и
+    // детерминированно: наносим торговцу смертельную рану (hp<=0, как после боя/истощения) —
+    // общий Death снимает Alive и эмитит entity/died, ровно как сталкеру. Никакого бессмертия.
     const { world, scheduler } = buildLive(7);
-    const traders = traderEids(world);
-    scheduler.run(world, TICKS_PER_DAY * 30);
-    const traderDeaths = world.bus.log.filter(
-      (e) => e.type === 'entity/died' && traders.includes((e.payload as { eid: EntityId }).eid),
-    ).length;
-    expect(traderDeaths).toBeGreaterThan(0); // торговец реально может умереть
+    const victim = traderEids(world)[0]!;
+    const HP = Health as unknown as { hp: Float32Array };
+    HP.hp[victim] = 0; // смертельная рана
+    scheduler.run(world, 1); // конец конвейера — Death читает hp<=0
+    const died = world.bus.log.some(
+      (e) => e.type === 'entity/died' && (e.payload as { eid: EntityId }).eid === victim,
+    );
+    expect(died, 'торговец под общим Death по hp<=0 (нет спец-защиты)').toBe(true);
+    expect(hasComponent(world.ecs, Alive, victim)).toBe(false); // Alive снят — реально мёртв
   }, 30000);
 });

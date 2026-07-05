@@ -35,6 +35,7 @@ import { HEALTH_MAX, HUNGER_CRITICAL, THIRST_CRITICAL } from '../balance/needs';
 import {
   ANIMAL_GRAZE_HUNGER_PER_TICK,
   ANIMAL_DRINK_THIRST_PER_TICK,
+  ANIMAL_SEEK_WATER_THIRST,
   REPRO_FORAGE_MIN,
   REPRO_MIN_HERD_IN_LOC,
   ANIMAL_NEWBORN_NEED,
@@ -47,6 +48,7 @@ import { Perception } from './perception';
 /** Виды (плотный индекс = species.json). */
 const DEER = 0;
 const BOAR = 1;
+const PSEUDODOG = 2; // хищник: flees=false, grazes=false (не водопой-мигрирует)
 
 /** Шаг планировщика Animals (источник истины — сама система, не литерал 30). */
 const STEP = Animals.schedule.every;
@@ -790,6 +792,11 @@ describe('ИСПРАВЛЕНО (D-037): синхронные co-located стад
 // ─────────────────────────────────────────────────────────────────────────────
 describe('вымирание в мёртвой зоне vs выживание в угодье (мортальность реальна)', () => {
   it('без пастьбы/воды (Саркофаг) стадо тает: Needs копит → hp падает <= 0', () => {
+    // NB (P-5/D-085): прогон БЕЗ Movement — водопой-миграция ставит departure, но транзит
+    // некому довезти, животное «зависает» в пути и остаётся в безводье. Тест валиден для
+    // механики Needs→hp (жажда/голод убивают эмерджентно); в ПОЛНОМ пайплайне (с Movement)
+    // грейзер из безводного, но проходимого угодья ушёл бы к воде (честный хвост P-5).
+    // Саркофаг здесь — тупик-ловушка (forage 0.05: даже уйдя, дошёл бы до воды нескоро).
     const w = createSimWorld(400 as Seed);
     const deadZone = 9; // forage 0.05, water false
     const eids: EntityId[] = [];
@@ -1093,5 +1100,133 @@ describe('RESUME на разных фазах границы: split ≡ непр
     scheduler(NeedsSystem, Animals, Movement).run(r2, N - (BREEDING_TICK + STEP));
     expect(hashSnapshot(serialize(r2))).toBe(ref.hash);
     expect(bornRows(r2)).toEqual(ref.born);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// НИЖЕ — гейт задачи 5.2 (P-5, D-085): graze-first (пастьба/питьё ДО движения) и
+// водопой-миграция травоядных. Читаются как сценарии мира, не как проверки полей.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GRAZE-FIRST (D-085, фактический «убийца стад» P-5): пастьба/питьё применяются на
+// due-тике ДО решения о движении. Затравленное/жаждущее травоядное, которое СЕЙЧАС
+// рванёт (бегство/миграция), всё равно успевает щипнуть корма/глотнуть воды — раньше
+// FLEE делал `continue` ДО graze/drink, и олень вечно бегал и дох от нужд СТОЯ У ВОДЫ.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('graze-first (D-085): убегающее/мигрирующее травоядное всё равно ест и пьёт в этот шаг', () => {
+  it('олень У ВОДЫ, спасаясь от человека, УБЕГАЕТ — но перед рывком и поел, и попил', () => {
+    // Дикая территория (loc4): water=true, forage 0.7, danger 0.4; безопаснейший сосед — Бар (5).
+    // Это ключевой P-5-сценарий: жертва СТОИТ на корме и воде, но уходит от угрозы. Graze-first
+    // гарантирует, что нужды упали ДО departure (иначе — вечный бег и смерть от жажды на воде).
+    const w = createSimWorld(5200 as Seed);
+    const wet = 4;
+    const deer = placeAnimal(w, DEER, 1, wet, { hunger: 50, thirst: 50 });
+    const human = placeHuman(w, wet);
+    setContacts(w, deer, [[human, 0]]);
+
+    scheduler(Animals).run(w, 1);
+
+    // Убежал: departure к безопаснейшему соседу (5), с места ушёл.
+    expect(POS.dest[deer]).toBe(5);
+    expect(POS.dest[deer]).not.toBe(wet);
+    expect(moveEvents(w).departed).toHaveLength(1);
+
+    // …И ВСЁ РАВНО поел (голод упал на GRAZE*forage*every) и попил (жажда — на DRINK*every).
+    const forage = getLocation(wet as LocationId).forage;
+    expect(NEED.hunger[deer]).toBeCloseTo(50 - ANIMAL_GRAZE_HUNGER_PER_TICK * forage * STEP, 4);
+    expect(NEED.hunger[deer]!).toBeLessThan(50); // реально пасся ДО бегства
+    expect(NEED.thirst[deer]).toBeCloseTo(50 - ANIMAL_DRINK_THIRST_PER_TICK * STEP, 4);
+    expect(NEED.thirst[deer]!).toBeLessThan(50); // реально пил ДО бегства (стоя на воде)
+  });
+
+  it('отставший голодный олень, мигрируя к стаду, всё равно пасётся на месте перед уходом', () => {
+    // Большинство стада в Агропроме (loc2); отставший — в кормной Дикой (loc4). Он departure-ит
+    // к большинству (шаг 5), но graze-first гасит его голод ДО departure.
+    const w = createSimWorld(5201 as Seed);
+    placeAnimal(w, DEER, 1, 2);
+    placeAnimal(w, DEER, 1, 2);
+    const straggler = placeAnimal(w, DEER, 1, 4, { hunger: 50 });
+
+    scheduler(Animals).run(w, 1);
+
+    // Ушёл к большинству (первый шаг маршрута 4→2 — это Бар 5), но перед уходом пасся.
+    expect(POS.dest[straggler]).toBe(5);
+    expect(POS.dest[straggler]).not.toBe(4);
+    expect(NEED.hunger[straggler]!).toBeLessThan(50); // graze-first: поел ДО миграции
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ВОДОПОЙ-МИГРАЦИЯ (D-085, закон №2): грейзер в БЕЗВОДНОЙ локации при пересечении
+// порога жажды уходит к БЛИЖАЙШЕЙ воде; ниже порога — стоит. Хищник (grazes=false)
+// в эту ветку не входит. Приоритет движения: бегство ВЫШЕ водопоя.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('водопой-миграция травоядных (D-085, закон №2 — из состояния жажды)', () => {
+  // Свалка (loc1): water=false, forage 0.3; соседи 0(danger .05),2(.3),3(.45). Ближайшая
+  // вода — Агропром (loc2, вес 35) БЛИЖЕ Кордона (loc0, вес 40): доказывает выбор по
+  // РАССТОЯНИЮ, а не по меньшему id. Безопаснейший сосед (для бегства) — Кордон (loc0).
+  const DRY = 1;
+
+  it('жаждущий грейзер (thirst≥порога) в безводье УХОДИТ к ближайшей воде (loc2, не loc0)', () => {
+    const w = createSimWorld(5210 as Seed);
+    const deer = placeAnimal(w, DEER, 1, DRY, { thirst: ANIMAL_SEEK_WATER_THIRST + 10 });
+
+    scheduler(Animals).run(w, 1);
+
+    // Departure к БЛИЖАЙШЕЙ воде: шаг = сама loc2 (прямое ребро 1—2, ближе loc0 по весу).
+    expect(POS.dest[deer]).toBe(2);
+    expect(POS.dest[deer]).not.toBe(DRY);
+    const { departed } = moveEvents(w);
+    expect(departed).toHaveLength(1);
+    expect(departed[0]!.payload.eid).toBe(deer);
+    // Водопой — эндогенный экологический драйв: корень причинной цепочки (закон №2).
+    expect(departed[0]!.causedBy).toBeNull();
+  });
+
+  it('грейзер с thirst НИЖЕ порога в том же безводье НЕ уходит по жажде (стоит и пасётся)', () => {
+    const w = createSimWorld(5211 as Seed);
+    const deer = placeAnimal(w, DEER, 1, DRY, { thirst: ANIMAL_SEEK_WATER_THIRST - 10 });
+
+    scheduler(Animals).run(w, 1);
+
+    expect(POS.dest[deer]).toBe(DRY); // жажда терпима → с места не тронулся
+    expect(moveEvents(w).departed).toHaveLength(0);
+  });
+
+  it('жажда РОВНО на пороге (граница `>=`) уже гонит грейзера к воде', () => {
+    // Свалка безводна ⇒ пастьба жажду не трогает, порог проверяется как есть.
+    const w = createSimWorld(5212 as Seed);
+    const deer = placeAnimal(w, DEER, 1, DRY, { thirst: ANIMAL_SEEK_WATER_THIRST });
+
+    scheduler(Animals).run(w, 1);
+
+    expect(POS.dest[deer]).toBe(2); // порог включительный → уходит
+  });
+
+  it('ХИЩНИК (pseudodog, grazes=false) в безводье с той же жаждой НЕ водопой-мигрирует', () => {
+    // Ветка водопоя — только для грейзеров; драйв хищника (pack/noise/solo) — иных систем.
+    const w = createSimWorld(5213 as Seed);
+    expect(getSpecies(PSEUDODOG).grazes).toBe(false);
+    const dog = placeAnimal(w, PSEUDODOG, 1, DRY, { thirst: ANIMAL_SEEK_WATER_THIRST + 30 });
+
+    scheduler(Animals).run(w, 1);
+
+    expect(POS.dest[dog]).toBe(DRY); // с места не тронулся по жажде
+    expect(moveEvents(w).departed).toHaveLength(0);
+  });
+
+  it('ПРИОРИТЕТ: бегство ВЫШЕ водопоя — жаждущий олень при угрозе бежит от людей, НЕ к воде', () => {
+    // Жажда толкала бы к воде (шаг к loc2), но человек в contacts приоритетнее → departure
+    // в min-danger соседа (loc0). Разные направления (вода=2, бегство=0) разводят исходы.
+    const w = createSimWorld(5214 as Seed);
+    const deer = placeAnimal(w, DEER, 1, DRY, { thirst: ANIMAL_SEEK_WATER_THIRST + 30 });
+    const human = placeHuman(w, DRY);
+    setContacts(w, deer, [[human, 0]]);
+
+    scheduler(Animals).run(w, 1);
+
+    expect(POS.dest[deer]).toBe(0); // побежал в безопаснейшего соседа
+    expect(POS.dest[deer]).not.toBe(2); // а НЕ к воде
   });
 });
