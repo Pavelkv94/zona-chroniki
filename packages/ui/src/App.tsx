@@ -19,6 +19,8 @@ import type { CSSProperties, ReactNode, ReactElement } from 'react';
 import { useUiStore } from './store/store';
 import MapCanvas from './map/MapCanvas';
 import RadioLog from './radio/RadioLog';
+import TimeControls from './controls/TimeControls';
+import { TICKS_PER_DAY } from '@zona/sim';
 
 // ── Палитра (тёмный фон #141210-подобный, приглушённые тона) ─────────────────
 const COLORS = {
@@ -95,8 +97,9 @@ export default function App(): ReactElement {
   const weatherCode = view?.weather ?? 0;
   const weather = WEATHER_LABEL[weatherCode] ?? `код ${weatherCode}`;
   const entityCount = view?.entities.length ?? 0;
-  // Внутриигровое время суток из тика (1 тик = 1 минута по TICKS_PER_DAY=1440).
-  const minuteOfDay = tick % 1440;
+  // Внутриигровое время суток из тика (1 тик = 1 минута; длина суток — из @zona/sim,
+  // не хардкод — устраняет дубль балансовой константы TICKS_PER_DAY, находка ревью).
+  const minuteOfDay = tick % TICKS_PER_DAY;
   const hh = String(Math.floor(minuteOfDay / 60)).padStart(2, '0');
   const mm = String(minuteOfDay % 60).padStart(2, '0');
 
@@ -124,6 +127,7 @@ export default function App(): ReactElement {
           padding: '0 0.8rem',
         }}
       >
+        <TimeControls />
         <span style={{ color: paused ? COLORS.dim : COLORS.accent }}>
           {paused ? '⏸ пауза' : `▶ ×${speed}`}
         </span>
