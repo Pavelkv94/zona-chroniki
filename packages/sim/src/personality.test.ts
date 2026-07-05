@@ -431,7 +431,7 @@ describe('Personality: голдены-якоря активными assert (D-07
     expect(hashSnapshot(snap)).toBe('481914ae');
   });
 
-  it('день-1 seed42 на конвейере Фазы 2 (физический базлайн) = 40b31e7d', () => {
+  it('день-1 seed42 на конвейере Фазы 2 (физический базлайн) = 7621b9f5', () => {
     // ЯКОРЬ конвейера Фазы 2 (createSimWorld → worldgen → registerPhase2Systems → прогон
     // TICKS_PER_DAY): rng-хвост Personality (D-071) закреплён. Задача 3.7 (D-074) подключила
     // нарративный блок в конвейер CLI/phase1-gate — их день-1 голден сдвинулся до f554331d
@@ -439,13 +439,13 @@ describe('Personality: голдены-якоря активными assert (D-07
     // физики (пишет fame/memory, дизъюнктные positions/inventory), поэтому ФИЗИЧЕСКИЙ голден
     // Фазы 2 держался 3c54d141. 5.0/D-083 (схемы Фазы 5): рост singleton WorldClock 2→5 полей
     // сдвинул канон ЧИСТО СХЕМНО 3c54d141 → 5b06b2f5. 5.2/D-085 (FORAGE→forage_food): ПОВЕДЕНЧЕСКИЙ
-    // сдвиг физики (форедж-питание/калибровка охоты меняют траекторию Фазы 2) ⇒ 5b06b2f5 → 40b31e7d
+    // сдвиг физики (форедж-питание/калибровка охоты меняют траекторию Фазы 2) ⇒ 5b06b2f5 → 7621b9f5
     // (детерминизм 2×). Физический якорь Фазы 2 отслеживает поведение конвейера, теперь с фореджем.
     const world = createSimWorld(42 as Seed);
     worldgen(world);
     const sched = createScheduler();
     registerPhase2Systems(sched);
     sched.run(world, TICKS_PER_DAY);
-    expect(hashSnapshot(serialize(world))).toBe('40b31e7d');
+    expect(hashSnapshot(serialize(world))).toBe('7621b9f5');
   });
 });

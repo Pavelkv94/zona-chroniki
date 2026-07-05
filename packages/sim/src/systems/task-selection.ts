@@ -42,13 +42,15 @@
  *   SLEEP  = W.fatigue·fatigue + (night?W.night:0) + safety·W.safe
  *   EAT    = (W.hunger + W.food)·hunger    (ТОЛЬКО если в инвентаре есть еда)
  *   DRINK  = W.thirst·thirst + waterHere·W.water
- *   HUNT   = (W.hunger + gameAbund·W.game + survival·W.skill)·hunger
+ *   HUNT   = (W.hunger + gameAbund·groundExp·W.game + survival·W.skill)·hunger
  *            − fear·W.fear − (night?W.nightHunt:0) − chaseCost  (ТОЛЬКО если есть
- *            достижимое угодье; вклад «удобства» домножен на голод — сытый не охотится,
- *            5.2; chaseCost — штраф погони, см. ниже, задача A закрытия P-5)
+ *            достижимое угодье ИЗ ЛИЧНОГО ВОСПРИЯТИЯ/ПАМЯТИ; вклад «удобства» домножен
+ *            на голод — сытый не охотится, 5.2 — И на `groundExp` — ЛИЧНУЮ «ожидаемую
+ *            добычу» угодья, задача Б; chaseCost — штраф погони, задача A закрытия P-5)
  *   FLEE   = W.fleeFear·fear
- *   FORAGE = FALLBACK_SCORE_FLOOR + W.forageBase·forageAbund   (fallback; ДОБЫВАЕТ
- *            forage_food из среды в TaskEffects, 5.2 — не мгновенный эффект)
+ *   FORAGE = FALLBACK_SCORE_FLOOR + W.forageBase·forageAbund + W.forageHunger·hunger
+ *            (fallback + ГОЛОД-драйвер, задача Б — голодный БЕЗ еды/дичи идёт СОБИРАТЬ;
+ *            ДОБЫВАЕТ forage_food из среды в TaskEffects, 5.2 — не мгновенный эффект)
  *   REST   = W.restBase + W.fatigue·fatigue·REST_FATIGUE_FACTOR (fallback, всегда >0)
  *   WORK   = W.work·safety·max(0, 1−maxNeed)   (ТОЛЬКО носитель Job И день, задача 2.4)
  *   TRADE  = W.trade·safety·max(0, 1−maxNeed)  (ТОЛЬКО повод в инвентаре И день, задача 2.6)
@@ -73,6 +75,23 @@
  * потеря ресурса, спирит закона №3). При реальном голоде бонус `W.food` (тоже
  * масштабированный голодом) поднимает EAT НАД HUNT — рационально доесть запас,
  * прежде чем идти на риск охоты (D-034).
+ *
+ * ── ЛИЧНАЯ ОХОТНИЧЬЯ ПАМЯТЬ И НЕДООХОТА (задача Б закрытия P-5, D-087, анти-чит) ─
+ * P-9 (пре-существующий чит loc-уровня): прежде угодья «куда идти» брались ГЛОБАЛЬНЫМ
+ * сканом `queryEntities([Animal,Alive])` — КАЖДЫЙ охотник знал местоположение вида ПО
+ * ВСЕЙ КАРТЕ в обход восприятия. УБРАНО: кандидаты-угодья охотника выводятся ТОЛЬКО из
+ * ЛИЧНО ВОСПРИНЯТОГО (perceivedGameLocs по contacts) + ЕГО ОХОТНИЧЬЕЙ ПАМЯТИ
+ * (systems/hunt-memory.ts — угодья, где он ЛИЧНО видел дичь; сериализуема, resume-safe).
+ * Память обновляется ДЕТЕРМИНИРОВАННО из наблюдаемого (updateHuntMemory ПЕРЕД выбором):
+ *  • видит живую дичь в loc ⇒ ПОДКРЕПЛЕНИЕ (expectation этого угодья = 1);
+ *  • СТОИТ у угодья из памяти без co-located дичи ⇒ ПУСТОЙ ВЫХОД (expectation −=
+ *    penalty; ниже порога — угодье ЗАБЫТО ⇒ выпадает из кандидатов).
+ * Так недоохота ЭКОНОМИЧНА, а не только «дорого гнать» (A): перевыбитое угодье охотник
+ * ЗАБЫВАЕТ (пусто ходить невыгодно) → дичь там плодится без давления → ЭМЕРДЖЕНТНОЕ
+ * равновесие БЕЗ мирового счётчика (анти-чит: только личный опыт). Если он не воспринял
+ * и не помнит ни одного угодья — huntGrounds пуст ⇒ huntLoc=undefined ⇒ sHunt=−∞ (HUNT
+ * недоступна, идёт собирать/другое — это ОК). `groundExp` (ожидаемая добыча, 0..1)
+ * дисконтирует вклад охоты в sHunt (см. формулу HUNT выше).
  *
  * ── ЦЕЛЬ ОХОТЫ И СТОИМОСТЬ ПОГОНИ (задача A закрытия P-5, анти-чит, закон №1/№2) ─
  * КОРЕНЬ P-5 (дичь вымирала в 0): прежний таргетинг брал `herd[0]` = min-eid особь
@@ -126,7 +145,7 @@
  * NPC, помеченный обходом (`avoidLoc` в ResourceStore после ограбления, addAvoid 2.13),
  * НЕ ВЫБИРАЕТ избегаемую локацию ЦЕЛЬЮ движения, пока `untilTick > tick`. Механизм —
  * ИСКЛЮЧЕНИЕ избегаемых loc из множеств КАНДИДАТОВ-ЦЕЛЕЙ ПЕРЕД поиском ближайшей (тот же
- * приём, что фильтр FLEE по safestNeighbor): дичь (`animalLocs`), вода (`WATER_LOCS`),
+ * приём, что фильтр FLEE по safestNeighbor): угодья (личные `huntGrounds`), вода (`WATER_LOCS`),
  * поселения (`settlementLocs`), поля с артефактом (`artifactFieldLocs`) прогоняются через
  * `notAvoided`; сосед для FLEE выбирается из НЕизбегаемых. Если единственный кандидат
  * задачи избегаем — `nearestLoc` вернёт `undefined`/`null` ⇒ соответствующая оценка
@@ -182,7 +201,36 @@ import {
   TRADE_KEEP_MEDICAL,
 } from '../balance/economy';
 import { getRelation as getMemoryRelation, factionReputation, entitySubject, getAvoids, isAvoided } from './memory';
+import { getHuntGrounds, getGroundExpectation, updateHuntMemory } from './hunt-memory';
 import { isNight } from './daynight';
+
+/**
+ * ФЛАГ строгого восприятия угодий (P-9, задача P-5/В — переезд из Б, D-087/D-088).
+ *
+ * ── OFF (по умолчанию, задача Б) ──────────────────────────────────────────────
+ * Кандидаты-угодья «куда идти» строятся ГЛОБАЛЬНЫМ сканом `queryEntities([Animal,Alive])`
+ * (как БЫЛО до P-5/Б): охотник знает, в каких loc есть живая дичь ПРЯМО СЕЙЧАС. Это
+ * loc-уровневое «где бродит дичь» (НЕ выбор особи — жертву по-прежнему берёт из ЛИЧНОГО
+ * восприятия `perceivedHuntTarget`). При OFF ЛИЧНАЯ охотничья память ВСЁ РАВНО активна и
+ * даёт ЭКОНОМИЧЕСКУЮ недоохоту: `groundExp` дисконтирует sHunt на угодьях, которые ЭТОТ
+ * охотник ЛИЧНО выбил впустую (см. недоохоту ниже) — «забыл пустое угодье, глобально нашёл
+ * свежее». Незнакомое (лично) угодье оптимистично считается полным (expectation=1), т.е.
+ * глобальный скан не душится памятью. Так охота ЖИВЁТ на всех seed (гейты Фазы 1/2 зелёные),
+ * а недоохота остаётся эмерджентной.
+ *
+ * ── ON (включает задача В как canary) ─────────────────────────────────────────
+ * Кандидаты-угодья — ТОЛЬКО из ЛИЧНОГО ВОСПРИЯТИЯ (`perceivedGameLocs` по contacts) +
+ * ОХОТНИЧЬЕЙ ПАМЯТИ (`getHuntGrounds`), БЕЗ глобального скана животных (строгий анти-чит
+ * loc-уровня). Требует драйва бродить/искать дичь (задача В), поэтому и живёт в В.
+ *
+ * Флаг типизирован как `boolean` (а не литерал) НАМЕРЕННО — чтобы TS НЕ сузил ветку до
+ * недостижимой (обе ветви компилируются, тесты-canary проверяют обе). Экспортируется для
+ * тестов (skip строгих P-9-canary при OFF; проверка глобального поиска при OFF).
+ */
+export const STRICT_HUNT_PERCEPTION: boolean = false;
+
+/** Общий пустой ReadonlySet (перф: без per-call аллокации в горячем цикле, D-088). */
+const EMPTY_LOC_SET: ReadonlySet<number> = new Set<number>();
 
 /** Ключ ResourceStore со списком видимых контактов наблюдателя (Perception 1.7, D-023). */
 const CONTACTS_KEY = 'contacts';
@@ -383,6 +431,35 @@ function nearestLocCost(from: number, targets: readonly LocationId[]): HuntLoc |
  * по прибытии (co-located резолвинг, D-029). Это НЕ ганг: пока он идёт, он никого не
  * «застолбил» глобально; жертва определяется лишь тем, кого он реально застанет и увидит.
  */
+/**
+ * ЛОКАЦИИ, где охотник `hunter` СЕЙЧАС ЛИЧНО ВИДИТ живую дичь (задача P-5/Б, АНТИ-ЧИТ,
+ * закон №1) — множество `POS.loc` каждого живого `Animal` из ЕГО `contacts` (Perception
+ * 1.7): co-located (та же loc) даёт его собственную loc, приближающийся из соседней —
+ * loc-соседа, где зверь ФИЗИЧЕСКИ стоит (он его там ВИДИТ — законная наблюдаемость). Это
+ * сигнал ПОДКРЕПЛЕНИЯ охотничьей памяти («тут есть дичь») и источник кандидатов-угодий
+ * «куда идти» ВЗАМЕН прежнего глобального скана `queryEntities([Animal,Alive])` (P-9:
+ * охотник больше НЕ знает угодья по всей карте — только воспринятое+память). Обходит
+ * ТОЛЬКО contacts — НИКОГДА не сканирует всех животных мира. Пусто ⇒ дичи не видит.
+ */
+function perceivedGameLocs(world: SystemCtx['world'], hunter: EntityId): ReadonlySet<number> {
+  const ecs = world.ecs;
+  const contacts = world.resources.get<readonly Contact[]>(CONTACTS_KEY, hunter);
+  if (contacts === undefined || contacts.length === 0) return EMPTY_LOC_SET;
+  // Перф (D-088): аллоцируем Set ЛЕНИВО — только когда найдена ПЕРВАЯ живая дичь. У
+  // большинства людей в contacts лишь другие ЛЮДИ (не Animal) ⇒ Set не создаётся вовсе
+  // (≈2М пропущенных аллокаций на 100-дневном прогоне). Поведение тождественно (пустой
+  // результат), поэтому снапшот/хэш не меняются.
+  let locs: Set<number> | undefined;
+  for (const c of contacts) {
+    const t = c.target;
+    if (!existsEntity(ecs, t)) continue;
+    if (!hasComponent(ecs, Animal, t) || !hasComponent(ecs, Alive, t)) continue;
+    if (locs === undefined) locs = new Set<number>();
+    locs.add(POS.loc[t] as number); // где зверь ФИЗИЧЕСКИ стоит (лично воспринято)
+  }
+  return locs ?? EMPTY_LOC_SET;
+}
+
 function perceivedHuntTarget(world: SystemCtx['world'], hunter: EntityId, loc: number): EntityId {
   const ecs = world.ecs;
   const contacts = world.resources.get<readonly Contact[]>(CONTACTS_KEY, hunter);
@@ -573,15 +650,18 @@ export const TaskSelection: System = {
     const ecs = world.ecs;
     const night = isNight(tick);
 
-    // ── Локации с живой дичью на этот тик (ТОЛЬКО loc-уровень «где бродит дичь», НЕ
-    // per-animal): множество loc, где есть Animal+Alive, по возрастанию id (детерминизм,
-    // закон №8). Это ЭКОЛОГИЧЕСКОЕ знание о локациях-угодьях (куда идти), НЕ выбор
-    // КОНКРЕТНОЙ жертвы — жертву охотник берёт ТОЛЬКО из личного восприятия
-    // (perceivedHuntTarget по contacts, анти-чит P-5/A). Скан всех животных здесь — лишь
-    // для набора локаций-целей движения, не для таргетинга особи.
-    const animalLocSet = new Set<number>();
-    for (const a of queryEntities(ecs, [Animal, Alive])) animalLocSet.add(POS.loc[a] as number);
-    const animalLocs = Array.from(animalLocSet).sort((a, b) => a - b) as LocationId[];
+    // ── Угодья «куда идти» (P-9, флаг STRICT_HUNT_PERCEPTION, D-088) ───────────
+    // OFF (Б, дефолт): ГЛОБАЛЬНЫЙ скан локаций с живой дичью (loc-уровень «где бродит
+    // дичь») — как БЫЛО до P-5/Б. Это НЕ выбор особи (жертву берёт perceivedHuntTarget
+    // из ЛИЧНОГО восприятия); лишь набор loc-целей движения. Считаем один раз до цикла
+    // NPC, по возрастанию id (детерминизм, закон №8). ON (В): не считаем вовсе — угодья
+    // берутся ПЕР-ОХОТНИК из восприятия/памяти (строгий анти-чит), см. цикл NPC ниже.
+    let animalLocs: readonly LocationId[] = [];
+    if (!STRICT_HUNT_PERCEPTION) {
+      const animalLocSet = new Set<number>();
+      for (const a of queryEntities(ecs, [Animal, Alive])) animalLocSet.add(POS.loc[a] as number);
+      animalLocs = Array.from(animalLocSet).sort((a, b) => a - b) as LocationId[];
+    }
 
     // ── Локации поселений (цель TRADE, задача 2.6): loc каждой сущности-поселения
     // (Settlement+Position), по возрастанию id. Один раз до цикла NPC, как animalLocs.
@@ -651,19 +731,76 @@ export const TaskSelection: System = {
 
       // Цели-кандидаты (нужны и для оценок, и для записи выбранной задачи).
       const homeLoc = hasComponent(ecs, Home, eid) ? (HOME.loc[eid] as LocationId) : (loc as LocationId);
-      // Охота (задача A закрытия P-5): РАЗДЕЛены «куда идти» и «кого бить».
-      //  • huntLoc — ближайшая достижимая локация-угодье (loc-уровень) + дистанция до неё
-      //    (для штрафа погони). `undefined` ⇒ дичи нигде нет/недостижима ⇒ sHunt=−∞.
+
+      // ── ЛИЧНАЯ ОХОТНИЧЬЯ ПАМЯТЬ (задача P-5/Б, АНТИ-ЧИТ, закон №1/№2, D-087) ──
+      // Обновляем память ИЗ ЛИЧНО ВОСПРИНЯТОГО ПЕРЕД выбором (fresh state → решение):
+      //  • perceivedSet — угодья, где охотник СЕЙЧАС видит живую дичь (contacts) —
+      //    ПОДКРЕПЛЯЮТСЯ (expectation=1);
+      //  • пустой выход — если он СТОИТ (dest==loc) у угодья, но co-located дичи НЕ
+      //    воспринимает (loc ∉ perceivedSet), угодье из его памяти ЭРОДИРУЕТ и ниже
+      //    порога ЗАБЫВАЕТСЯ ⇒ перестаёт туда ходить (экономическая недоохота).
+      const perceivedSet = perceivedGameLocs(world, eid);
+      const standing = (POS.dest[eid] as number) === loc;
+      // ПУСТОЙ ВЫХОД = он ПРИШЁЛ СЮДА ОХОТИТЬСЯ (прошлый Task=HUNT на эту loc), СТОИТ и
+      // НЕ воспринимает co-located дичь. Эрозия веры — ТОЛЬКО от НЕУДАЧНОГО ВЫХОДА на
+      // охоту, а не от простого нахождения в loc по другим делам (иначе охотник забывал
+      // бы угодья, лишь проходя мимо/ночуя рядом; недоохота должна расти из ОХОТНИЧЬЕГО
+      // опыта, а хранение грунтов — переживать бытовые визиты). Прошлый Task ещё не
+      // перезаписан (TaskSelection пишет ниже) ⇒ читаем намерение этого тика.
+      const wasHuntingHere =
+        hasComponent(ecs, Task, eid) &&
+        (TSK.kind[eid] as number) === TaskKind.HUNT &&
+        (TSK.targetLoc[eid] as number) === loc;
+      const emptyStandLoc = standing && wasHuntingHere && !perceivedSet.has(loc) ? loc : undefined;
+      // ФАСТ-ПАСТ (перф, D-088, hash-preserving): updateHuntMemory — no-op, когда НЕЧЕГО
+      // подкреплять (perceivedSet пуст), НЕЧЕГО эродировать (не пустой выход) и НЕЧЕГО
+      // старить (память пуста). Пропуск избегает аллокации Map + чтения/записи ресурса
+      // на КАЖДОГО человека КАЖДЫЙ тик (≈2М вызовов на 100-дневном прогоне) — тождественно
+      // вызову (тот бы вернулся без записи), поэтому снапшот/хэш НЕ меняются.
+      const memGrounds = getHuntGrounds(world.resources, eid);
+      if (perceivedSet.size > 0 || emptyStandLoc !== undefined || memGrounds.length > 0) {
+        updateHuntMemory(world.resources, eid, tick, perceivedSet, emptyStandLoc);
+      }
+
+      // Охота (задача A/Б закрытия P-5): РАЗДЕЛены «куда идти» и «кого бить».
+      //  • Кандидаты-угодья (флаг STRICT_HUNT_PERCEPTION, D-088):
+      //     — ON (В): ТОЛЬКО из ЛИЧНОГО ВОСПРИЯТИЯ+ПАМЯТИ (`getHuntGrounds` — угодья, где
+      //       он ЛИЧНО видел дичь и ещё её «ожидает»; свеже-воспринятые записаны выше).
+      //       Строгий анти-чит: не воспринял и не помнит — huntGrounds пуст ⇒ HUNT −∞.
+      //     — OFF (Б, дефолт): ГЛОБАЛЬНЫЙ `animalLocs` (где дичь ЕСТЬ сейчас) — охота живёт
+      //       на всех seed; недоохота остаётся через `groundExp` (см. ниже).
+      //  • huntLoc — ближайшее достижимое из них + дистанция (для штрафа погони).
       //  • huntEid — КОНКРЕТНАЯ жертва ИЗ ЛИЧНОГО ВОСПРИЯТИЯ (contacts, анти-чит),
       //    рассредоточенная по стаду смещением по своему eid; `0`, пока охотник в пути
       //    (co-located дичи ещё не видит — жертву свяжет Encounters по прибытии).
-      const huntLoc = nearestLocCost(loc, notAvoided(animalLocs));
+      const huntGrounds: readonly LocationId[] = STRICT_HUNT_PERCEPTION
+        ? getHuntGrounds(world.resources, eid).map((g) => g[0] as LocationId)
+        : animalLocs;
+      const huntLoc = huntGrounds.length > 0 ? nearestLocCost(loc, notAvoided(huntGrounds)) : undefined;
       const huntEid = perceivedHuntTarget(world, eid, loc);
       const drinkLoc = waterHere
         ? (loc as LocationId)
         : (nearestLoc(loc, notAvoided(WATER_LOCS)) ?? (loc as LocationId));
       const fleeLoc = safestNeighbor(loc, hasAvoids ? avoidLoc : undefined);
       const gameAbund = huntLoc !== undefined ? getLocation(huntLoc.loc).game : 0;
+      // ЛИЧНАЯ «ожидаемая добыча» выбранного угодья (0..1) — ЭКОНОМИЧЕСКАЯ недоохота:
+      // перевыбитое ЭТИМ охотником угодье имеет низкий expectation ⇒ дисконтирует sHunt
+      // (см. ниже). При OFF (Б) угодье, о котором память МОЛЧИТ (лично не выбивал),
+      // считается ПОЛНЫМ (expectation=1) — глобальный скан не душится памятью, охота
+      // живёт; недоохота бьёт лишь по угодьям, которые он ЛИЧНО находил пустыми. При ON
+      // (В) кандидат всегда из памяти/восприятия ⇒ expectation известен (≥ порога / 1).
+      // Перф (D-088): getGroundExpectation читаем ТОЛЬКО когда память могла бы что-то
+      // сказать про угодье — она непуста ИЛИ этот тик воспринял дичь (обновление выше
+      // могло записать). Иначе (пусто и дичи не видел) угодье лично не выбивалось ⇒ при
+      // OFF оптимистично полное (groundExp=1), при ON кандидата-угодья и не было бы.
+      // Тождественно прежнему (тогда getGroundExpectation вернул бы 0 ⇒ те же ветви).
+      const memActive = memGrounds.length > 0 || perceivedSet.size > 0;
+      const knownExp =
+        huntLoc !== undefined && (STRICT_HUNT_PERCEPTION || memActive)
+          ? getGroundExpectation(world.resources, eid, huntLoc.loc)
+          : 0;
+      const groundExp =
+        huntLoc === undefined ? 0 : STRICT_HUNT_PERCEPTION ? knownExp : knownExp > 0 ? knownExp : 1;
       // Трудоустройство (задача 2.4): носительство Job = «работает на поселение».
       // У безработных Job нет ⇒ WORK недоступен (score −∞), поведение не-Job NPC не
       // меняется. workplace — loc рабочего места (цель WORK); задан только при hasJob.
@@ -711,15 +848,26 @@ export const TaskSelection: System = {
       // невыгодна, умеренно голодный переключается на forage/ближнюю дичь (эмерджентно).
       const chaseCost =
         huntLoc !== undefined ? W.chase * huntLoc.cost * (1 + CHASE_FATIGUE_FACTOR * fatigue) : 0;
+      // ЭКОНОМИЧЕСКАЯ НЕДООХОТА (задача Б): вклад «удобства» охоты дисконтирован ЛИЧНОЙ
+      // «ожидаемой добычей» угодья `groundExp` (gameAbund·groundExp): перевыбитое угодье,
+      // где он раз за разом ходил впустую, имеет низкий groundExp ⇒ слабый sHunt ⇒
+      // проигрывает собирательству; он «забывает» пустое угодье и переключается — стада
+      // там плодятся без охотников (саморегуляция из ЛИЧНОГО опыта, БЕЗ мирового знания).
       const sHunt =
         huntLoc !== undefined
-          ? (W.hunger + gameAbund * W.game + survival * W.skill) * hunger -
+          ? (W.hunger + gameAbund * groundExp * W.game + survival * W.skill) * hunger -
             fear * W.fear -
             (night ? W.nightHunt : 0) -
             chaseCost
           : -Infinity;
       const sFlee = W.fleeFear * fear;
-      const sForage = FALLBACK_SCORE_FLOOR + W.forageBase * locData.forage;
+      // FORAGE (задача Б, D-087): fallback + ГОЛОД-драйвер. `W.forageHunger·hunger`
+      // делает собирательство РЕАЛЬНЫМ выживальческим fallback'ом — голодный БЕЗ еды и
+      // БЕЗ известного угодья идёт СОБИРАТЬ, а не голодает у костра. Строго ниже EAT/HUNT
+      // (W.forageHunger < W.hunger) ⇒ еда в рюкзаке/ближняя дичь предпочтительнее; сытый
+      // (hunger≈0) ⇒ вклад ~0 (прежнее fallback-поведение, не собирает впустую). Всегда
+      // > 0 (idle запрещён, D-020).
+      const sForage = FALLBACK_SCORE_FLOOR + W.forageBase * locData.forage + W.forageHunger * hunger;
       const sRest = W.restBase + W.fatigue * fatigue * REST_FATIGUE_FACTOR;
       // WORK (задача 2.4): ТОЛЬКО носитель Job и ТОЛЬКО днём. `needCalm` = 1−самая
       // высокая нужда (clamp ≥0): любая критическая нужда/страх гасит WORK к нулю и

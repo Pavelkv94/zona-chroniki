@@ -43,8 +43,12 @@
  *  • FORAGE→ ДОБЫВАЕТ физический предмет `forage_food` из ОБИЛИЯ локации в инвентарь
  *            (P-5/5.2): голод больше НЕ гасится напрямую — фуражир собирает раститель-
  *            ную еду, а EAT её потом ест (чище/физичнее: масса проходит через леджер).
- *            Выход за тик = `floor(FORAGE_FOOD_YIELD_PER_ABUNDANCE × обилие_патча)`
- *            (истощённый/мёртвый патч → 0, «пусто→ноль», закон №1/№2). Обилие —
+ *            Выход за тик = `floor(FORAGE_FOOD_YIELD_PER_ABUNDANCE × обилие_патча ×
+ *            погодный_множитель)` (P-5/Б, D-087): дождь/туман/гроза (WorldClock.weather)
+ *            урезают сбор ⇒ форедж НЕНАДЁЖЕН и НИЗКОКАЛОРИЕН (forage_food nutrition мал,
+ *            items.json) — выживальческий fallback, а не образ жизни (мясо сытнее/
+ *            надёжнее). Истощённый/мёртвый патч или сильная непогода → 0 («пусто→ноль»,
+ *            закон №1/№2, из состояния среды). Обилие —
  *            ВОЗОБНОВЛЯЕМЫЙ истощаемый ресурс (см. ниже «Обилие среды»). Источник
  *            ФИЗИЧЕН — растительность угодья (закон №3). qty>0 ⇒ ЛЕДЖЕР
  *            `item/harvested{source:'forage'}` (D-045).
@@ -101,6 +105,7 @@ import {
   FORAGE_FOOD_YIELD_PER_ABUNDANCE,
   FORAGE_DEPLETION_PER_FOOD,
   FORAGE_REGEN_PER_TICK,
+  FORAGE_WEATHER_FACTOR_BY_CODE,
 } from '../balance/ecology';
 
 /** Ключ ResourceStore со списком инвентаря (D-007); форма — как пишет worldgen 1.3. */
@@ -137,6 +142,18 @@ const NEED = Needs as unknown as {
 };
 const HOME = Home as unknown as { readonly loc: Uint32Array };
 const TSK = Task as unknown as { readonly kind: Uint8Array; readonly causeEvent: Uint32Array };
+/** Колонка `WorldClock.weather` (ui8) — код текущей погоды среды (индекс WEATHER_TYPES). */
+const CLOCK = WorldClock as unknown as { readonly weather: Uint8Array };
+
+/**
+ * Погодный множитель выхода собирательства по коду погоды среды (P-5/Б, D-087, закон
+ * №2 — из состояния WorldClock.weather, НЕ «X% шанс»). Дождь/туман/гроза урезают выход
+ * (см. FORAGE_WEATHER_FACTOR_BY_CODE); код вне таблицы (нет среды/будущая погода) ⇒ 1.0.
+ */
+function forageWeatherFactor(weatherCode: number): number {
+  const f = FORAGE_WEATHER_FACTOR_BY_CODE[weatherCode];
+  return f === undefined ? 1 : f;
+}
 
 /** Значение, зажатое в отрезок [min, max]. */
 function clamp(v: number, min: number, max: number): number {
@@ -277,6 +294,11 @@ export const TaskEffects: System = {
     // пустой мир не оживает (голден 481914ae цел).
     const clocks = queryEntities(ecs, [WorldClock]);
     const clockEid: EntityId | undefined = clocks.length > 0 ? (clocks[0] as EntityId) : undefined;
+    // Погодный множитель выхода собирательства (P-5/Б, D-087): дождь/туман/гроза
+    // урезают выход (из состояния WorldClock.weather, закон №2). Погода — ГЛОБАЛЬНАЯ
+    // (среда мира, не per-loc), поэтому фактор один на тик. Нет среды ⇒ множитель 1.
+    const weatherFactor =
+      clockEid !== undefined ? forageWeatherFactor(CLOCK.weather[clockEid] as number) : 1;
     let abundance: Map<number, number> | undefined;
     let abundanceDirty = false;
     if (clockEid !== undefined) {
@@ -357,8 +379,11 @@ export const TaskEffects: System = {
           if (clockEid === undefined || abundance === undefined) break;
           const base = getLocation(loc as LocationId).forage;
           const a = abundance.get(loc) ?? base; // нет записи ⇒ патч полон (base)
-          const yieldQty = Math.floor(FORAGE_FOOD_YIELD_PER_ABUNDANCE * a);
-          if (yieldQty <= 0) break; // истощённый/мёртвый патч — ничего (пусто→ноль)
+          // Выход = обилие × ПОГОДА (P-5/Б, D-087): в дождь/туман/грозу weatherFactor<1
+          // урезает сбор ⇒ форедж НЕНАДЁЖЕН (из состояния среды, закон №2). floor ⇒
+          // целое (предметы дискретны); малое обилие/непогода → 0 («пусто→ноль»).
+          const yieldQty = Math.floor(FORAGE_FOOD_YIELD_PER_ABUNDANCE * a * weatherFactor);
+          if (yieldQty <= 0) break; // истощённый патч/непогода — ничего (пусто→ноль)
 
           // Кладём добытое в инвентарь (слияние, сорт. по item) — масса пришла в мир.
           const inv = resources.get<readonly InventoryEntry[]>(INVENTORY_KEY, eid) ?? [];

@@ -5,7 +5,7 @@
     { "id": "canned", "kind": "food", "weight": 0.4, "nutrition": 45, "basePrice": 55 },
     { "id": "bread", "kind": "food", "weight": 0.25, "nutrition": 25, "basePrice": 25 },
     { "id": "meat", "kind": "food", "weight": 0.3, "nutrition": 35, "basePrice": 40 },
-    { "id": "forage_food", "kind": "food", "weight": 0.2, "nutrition": 15, "basePrice": 8 },
+    { "id": "forage_food", "kind": "food", "weight": 0.2, "nutrition": 10, "basePrice": 8 },
     { "id": "water", "kind": "drink", "weight": 0.5, "hydration": 60, "basePrice": 20 },
     { "id": "bandage", "kind": "medical", "weight": 0.05, "basePrice": 90 },
     { "id": "medkit", "kind": "medical", "weight": 0.35, "basePrice": 260 },
