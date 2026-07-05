@@ -92,9 +92,27 @@ function simEvent(id: number, tick = 1): SimEvent {
   } as SimEvent;
 }
 
+/** Летописная запись `chronicle/recorded` (для буфера летописи, задача 4.4). */
+function chronicleEvent(id: number, day = 0, tick = day * 1440 + 1): SimEvent {
+  return {
+    id: id as never,
+    tick: tick as Tick,
+    type: 'chronicle/recorded',
+    causedBy: (id - 1) as never,
+    payload: {
+      eventId: (id - 1) as never,
+      day,
+      significance: 0.8,
+      kind: 'entity/died',
+      subjects: ['e:5'],
+    },
+  } as SimEvent;
+}
+
 const FRESH = {
   view: null,
   log: [],
+  chronicleLog: [],
   names: {},
   detail: null,
   selectedEid: null,
@@ -194,6 +212,78 @@ describe('applyMessage: окно лога — кольцевой буфер (D-0
     // Самое старое сохранённое — id 201 (1..200 вытеснены), самое новое — 1200.
     expect(log.at(0)?.id as number).toBe(201);
     expect(log.at(-1)?.id as number).toBe(1200);
+  });
+});
+
+describe('applyMessage: буфер летописи — переживает шум эфира (задача 4.4)', () => {
+  it('logDelta извлекает chronicle/recorded в отдельный буфер chronicleLog', () => {
+    useUiStore.getState().applyMessage({
+      type: 'logDelta',
+      events: [simEvent(1), chronicleEvent(2), simEvent(3), chronicleEvent(4, 1)],
+    });
+    // Общий лог держит ВСЕ события; буфер летописи — только записи chronicle/recorded.
+    expect(useUiStore.getState().log.map((e) => e.id as number)).toEqual([1, 2, 3, 4]);
+    expect(useUiStore.getState().chronicleLog.map((e) => e.id as number)).toEqual([2, 4]);
+  });
+
+  it('шум эфира вытесняет записи из ОКНА лога, но НЕ из буфера летописи', () => {
+    // Одна летописная запись, затем заливаем 1200 радио-подобных событий (эфир).
+    useUiStore.getState().applyMessage({ type: 'logDelta', events: [chronicleEvent(1)] });
+    const flood: SimEvent[] = [];
+    for (let i = 2; i <= 1201; i++) flood.push(simEvent(i));
+    useUiStore.getState().applyMessage({ type: 'logDelta', events: flood });
+
+    // Из общего окна (LOG_WINDOW=1000) летописная запись id=1 давно вытеснена…
+    expect(useUiStore.getState().log.some((e) => (e.id as number) === 1)).toBe(false);
+    // …а в буфере летописи она ЖИВА (эфир туда не попадает).
+    expect(useUiStore.getState().chronicleLog.map((e) => e.id as number)).toEqual([1]);
+  });
+
+  it('буфер летописи — кольцевой (CHRONICLE_WINDOW=500): держит последние записи', () => {
+    const many: SimEvent[] = [];
+    for (let i = 1; i <= 600; i++) many.push(chronicleEvent(i, i));
+    useUiStore.getState().applyMessage({ type: 'logDelta', events: many });
+    const buf = useUiStore.getState().chronicleLog;
+    expect(buf.length).toBe(500);
+    expect(buf.at(0)?.id as number).toBe(101); // 1..100 вытеснены
+    expect(buf.at(-1)?.id as number).toBe(600);
+  });
+
+  it('кольцо летописи точно на границе: 501-я запись вытесняет 1-ю (cap=500)', () => {
+    // Заливаем РОВНО 500 записей — буфер полон, ничего не вытеснено.
+    const full: SimEvent[] = [];
+    for (let i = 1; i <= 500; i++) full.push(chronicleEvent(i, i));
+    useUiStore.getState().applyMessage({ type: 'logDelta', events: full });
+    expect(useUiStore.getState().chronicleLog.length).toBe(500);
+    expect(useUiStore.getState().chronicleLog.at(0)?.id as number).toBe(1);
+
+    // 501-я запись выталкивает самую старую (id=1); окно держит [2..501].
+    useUiStore.getState().applyMessage({ type: 'logDelta', events: [chronicleEvent(501, 501)] });
+    const buf = useUiStore.getState().chronicleLog;
+    expect(buf.length).toBe(500);
+    expect(buf.some((e) => (e.id as number) === 1)).toBe(false); // 1-я вытеснена
+    expect(buf.at(0)?.id as number).toBe(2);
+    expect(buf.at(-1)?.id as number).toBe(501);
+  });
+
+  it('буфер летописи хранит записи в порядке прихода через несколько дельт', () => {
+    useUiStore.getState().applyMessage({ type: 'logDelta', events: [chronicleEvent(2), simEvent(3)] });
+    useUiStore.getState().applyMessage({ type: 'logDelta', events: [simEvent(4), chronicleEvent(5, 1)] });
+    useUiStore.getState().applyMessage({ type: 'logDelta', events: [chronicleEvent(7, 2)] });
+    expect(useUiStore.getState().chronicleLog.map((e) => e.id as number)).toEqual([2, 5, 7]);
+  });
+
+  it('logDelta без летописных записей НЕ трогает буфер летописи (тот же массив)', () => {
+    useUiStore.getState().applyMessage({ type: 'logDelta', events: [chronicleEvent(1)] });
+    const before = useUiStore.getState().chronicleLog;
+    useUiStore.getState().applyMessage({ type: 'logDelta', events: [simEvent(2), simEvent(3)] });
+    expect(useUiStore.getState().chronicleLog).toBe(before); // ссылка не менялась (нет ре-рендера)
+  });
+
+  it('init чистит буфер летописи под новый мир', () => {
+    useUiStore.setState({ chronicleLog: [chronicleEvent(1)] });
+    useUiStore.getState().init(42 as Seed);
+    expect(useUiStore.getState().chronicleLog).toEqual([]);
   });
 });
 

@@ -21,6 +21,7 @@ import { useUiStore } from './store/store';
 import MapCanvas from './map/MapCanvas';
 import RadioLog from './radio/RadioLog';
 import Inspector from './inspector/Inspector';
+import ChronicleLog from './chronicle/ChronicleLog';
 import TimeControls from './controls/TimeControls';
 import { TICKS_PER_DAY } from '@zona/sim';
 
@@ -67,8 +68,6 @@ const heading: CSSProperties = {
   fontSize: '11px',
   marginBottom: '0.5rem',
 };
-
-const todo: CSSProperties = { color: COLORS.dim, fontStyle: 'italic' };
 
 /** Названия погоды по коду (презентация; полноценный справочник — на панели карты 4.2). */
 // Порядок СТРОГО по WEATHER_TYPES (@zona/sim: clear/overcast/rain/fog/storm) —
@@ -149,14 +148,7 @@ function NarrativePanel(): ReactElement {
         {tabBtn('chronicle', 'Летопись')}
         {tabBtn('inspector', 'Инспектор')}
       </div>
-      {tab === 'inspector' ? (
-        <Inspector />
-      ) : (
-        // Заглушка до 4.4 (летопись мира). 4.5 её НЕ реализует — только держит вкладку.
-        <div style={{ ...todo, flex: 1 }} data-testid="chronicle-stub">
-          TODO 4.4: летопись мира (значимые события)
-        </div>
-      )}
+      {tab === 'inspector' ? <Inspector /> : <ChronicleLog />}
     </section>
   );
 }

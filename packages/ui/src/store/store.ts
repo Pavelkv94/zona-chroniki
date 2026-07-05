@@ -44,6 +44,18 @@ import { createWorkerClient, type WorkerClient } from '../bridge/worker-client';
  */
 const LOG_WINDOW = 1000;
 
+/**
+ * Размер ОТДЕЛЬНОГО буфера летописи (кольцевой, задача 4.4). Записи `chronicle/recorded`
+ * РЕДКИ (~293 за 100 дней прогона), но окно общего лога (`LOG_WINDOW`) заливается десятками
+ * тысяч `radio/relayed` — летописные записи вытеснились бы за секунды. Поэтому Chronicle
+ * держим в ВЫДЕЛЕННОМ буфере: сюда попадают ТОЛЬКО `chronicle/recorded`, значит `CHRONICLE_WINDOW`
+ * записей переживают весь шум эфира. Тоже ПРЕЗЕНТАЦИОННЫЙ предел (не balance, закон №7).
+ */
+const CHRONICLE_WINDOW = 500;
+
+/** Тип летописной записи-события (страж-дискриминант для извлечения в буфер). */
+const CHRONICLE_KIND = 'chronicle/recorded';
+
 /** Телеметрия воркера (тайм-бар/диагностика темпа). */
 export interface SimStats {
   readonly tick: Tick;
@@ -57,6 +69,13 @@ export interface UiState {
   readonly view: WorldView | null;
   /** Окно последних лог-событий (кольцевой буфер, ≤ LOG_WINDOW). */
   readonly log: readonly SimEvent[];
+  /**
+   * ОТДЕЛЬНЫЙ буфер летописи (кольцевой, ≤ CHRONICLE_WINDOW): только события
+   * `chronicle/recorded` (задача 4.4). Извлекается из тех же `logDelta`, что и общий лог,
+   * но в свой список — так значимые записи ПЕРЕЖИВАЮТ шум эфира (radio/relayed вытеснил бы
+   * их из общего окна за секунды). Панель «Летопись» (ChronicleLog) читает ЭТОТ буфер.
+   */
+  readonly chronicleLog: readonly SimEvent[];
   /**
    * КЭШ индекса имён `eid → EntityName` (задача 4.3, D-081). Копится дельтами `names`
    * воркера. Read-time рендер эфира строит `nameOf` из него (имя говорящего/субъекта —
@@ -118,6 +137,7 @@ export const useUiStore = create<UiState>((set, get) => {
   return {
     view: null,
     log: [],
+    chronicleLog: [],
     names: {},
     detail: null,
     selectedEid: null,
@@ -129,8 +149,8 @@ export const useUiStore = create<UiState>((set, get) => {
 
     init(seed, snapshot) {
       const c = ensureClient();
-      // Новый мир — чистим окно/имена/деталь/выбор (прошлый мир больше не актуален).
-      set({ view: null, log: [], names: {}, detail: null, selectedEid: null, stats: null, connected: true });
+      // Новый мир — чистим окно/летопись/имена/деталь/выбор (прошлый мир больше не актуален).
+      set({ view: null, log: [], chronicleLog: [], names: {}, detail: null, selectedEid: null, stats: null, connected: true });
       c.post(snapshot ? { type: 'init', seed, snapshot } : { type: 'init', seed });
     },
 
@@ -187,9 +207,22 @@ export const useUiStore = create<UiState>((set, get) => {
         case 'logDelta': {
           if (msg.events.length === 0) return;
           const merged = [...get().log, ...msg.events];
-          // Кольцевой буфер: держим только последние LOG_WINDOW событий.
+          // Кольцевой буфер общего лога: держим только последние LOG_WINDOW событий.
           const log = merged.length > LOG_WINDOW ? merged.slice(merged.length - LOG_WINDOW) : merged;
-          set({ log });
+
+          // Извлекаем ЛЕТОПИСНЫЕ записи в свой буфер (они редки — переживают шум эфира,
+          // задача 4.4). Если в дельте их нет — chronicleLog не трогаем (без лишнего ре-рендера).
+          const chronicleDelta = msg.events.filter((e) => e.type === CHRONICLE_KIND);
+          if (chronicleDelta.length === 0) {
+            set({ log });
+            return;
+          }
+          const chronicleMerged = [...get().chronicleLog, ...chronicleDelta];
+          const chronicleLog =
+            chronicleMerged.length > CHRONICLE_WINDOW
+              ? chronicleMerged.slice(chronicleMerged.length - CHRONICLE_WINDOW)
+              : chronicleMerged;
+          set({ log, chronicleLog });
           return;
         }
         case 'names': {
