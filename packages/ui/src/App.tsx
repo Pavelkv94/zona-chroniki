@@ -15,10 +15,12 @@
  * неона (роль ui-engineer). Стили инлайновые (без CSS-библиотек сверх согласованных).
  */
 
+import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode, ReactElement } from 'react';
 import { useUiStore } from './store/store';
 import MapCanvas from './map/MapCanvas';
 import RadioLog from './radio/RadioLog';
+import Inspector from './inspector/Inspector';
 import TimeControls from './controls/TimeControls';
 import { TICKS_PER_DAY } from '@zona/sim';
 
@@ -84,6 +86,81 @@ function Panel(props: { area: string; title: string; children: ReactNode }): Rea
   );
 }
 
+// ── Вкладки «Летопись | Инспектор» (стык 4.4/4.5) ────────────────────────────
+// Обе панели делят одну область макета (GDD §11). Контейнер держит активную вкладку
+// и АВТО-переключается на «Инспектор» при выборе сущности (клик на карте/в эфире →
+// `selectedEid` ≠ null): наблюдатель кликнул — сразу видит карточку. Задача 4.4
+// заменит заглушку летописи своим компонентом, не трогая инспектор (append-only).
+type TabId = 'chronicle' | 'inspector';
+
+const tabBar: CSSProperties = {
+  display: 'flex',
+  gap: '0.15rem',
+  marginBottom: '0.4rem',
+  borderBottom: `1px solid ${COLORS.border}`,
+};
+const tabBtnBase: CSSProperties = {
+  background: 'transparent',
+  border: 'none',
+  borderBottom: '2px solid transparent',
+  color: COLORS.dim,
+  font: '11px ui-monospace, monospace',
+  textTransform: 'uppercase',
+  letterSpacing: '0.06em',
+  padding: '0.2rem 0.5rem',
+  cursor: 'pointer',
+};
+
+function NarrativePanel(): ReactElement {
+  const selectedEid = useUiStore((s) => s.selectedEid);
+  const [tab, setTab] = useState<TabId>('chronicle');
+  // Авто-переход на инспектор при НОВОМ выборе (selectedEid стал не-null). Ref хранит
+  // прошлый выбор — переключаем лишь на ФРОНТ выбора, не на каждый ре-рендер (иначе
+  // юзер не смог бы вернуться на «Летопись», пока сущность выбрана).
+  const prevSel = useRef<number | null>(null);
+  useEffect(() => {
+    const cur = selectedEid as unknown as number | null;
+    if (cur !== null && cur !== prevSel.current) setTab('inspector');
+    prevSel.current = cur;
+  }, [selectedEid]);
+
+  const tabBtn = (id: TabId, label: string): ReactElement => {
+    const active = tab === id;
+    return (
+      <button
+        type="button"
+        style={{
+          ...tabBtnBase,
+          color: active ? COLORS.text : COLORS.dim,
+          borderBottomColor: active ? COLORS.accent : 'transparent',
+        }}
+        onClick={() => setTab(id)}
+        data-testid={`tab-${id}`}
+        aria-selected={active}
+      >
+        {label}
+      </button>
+    );
+  };
+
+  return (
+    <section style={{ ...panelBase, gridArea: 'chronicle' }}>
+      <div style={tabBar}>
+        {tabBtn('chronicle', 'Летопись')}
+        {tabBtn('inspector', 'Инспектор')}
+      </div>
+      {tab === 'inspector' ? (
+        <Inspector />
+      ) : (
+        // Заглушка до 4.4 (летопись мира). 4.5 её НЕ реализует — только держит вкладку.
+        <div style={{ ...todo, flex: 1 }} data-testid="chronicle-stub">
+          TODO 4.4: летопись мира (значимые события)
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function App(): ReactElement {
   const view = useUiStore((s) => s.view);
   const stats = useUiStore((s) => s.stats);
@@ -113,9 +190,7 @@ export default function App(): ReactElement {
         <RadioLog />
       </Panel>
 
-      <Panel area="chronicle" title="Летопись / Инспектор">
-        <div style={todo}>TODO 4.5–4.6: вкладки летописи и инспектора сущности</div>
-      </Panel>
+      <NarrativePanel />
 
       <section
         style={{

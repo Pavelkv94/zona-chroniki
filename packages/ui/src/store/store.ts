@@ -89,6 +89,8 @@ export interface UiState {
   step(ticks: number): void;
   /** Выбрать сущность и запросить её деталь. */
   inspect(eid: EntityId): void;
+  /** Сбросить выбор/деталь (закрыть инспектор). ЧИСТО read-side, воркеру не шлёт. */
+  clearSelection(): void;
   /** Запросить полный снапшот мира (сохранение). */
   requestSnapshot(): void;
 
@@ -150,6 +152,12 @@ export const useUiStore = create<UiState>((set, get) => {
     inspect(eid) {
       set({ selectedEid: eid });
       client?.post({ type: 'inspect', eid });
+    },
+
+    clearSelection() {
+      // Закрытие инспектора — чистое обнуление выбора/детали (закон №8: воркеру
+      // команда НЕ шлётся, тик мира не трогается). Симметрично `inspect`.
+      set({ selectedEid: null, detail: null });
     },
 
     requestSnapshot() {

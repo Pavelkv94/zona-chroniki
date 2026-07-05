@@ -7,10 +7,29 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
-import type { EntityId, EntityKind, FactionId, LocationId, Tick, WorldView } from '@zona/shared';
+import { render, screen, cleanup, act, fireEvent } from '@testing-library/react';
+import type { EntityDetail, EntityId, EntityKind, FactionId, LocationId, Tick, WorldView } from '@zona/shared';
 import App from './App';
 import { useUiStore } from './store/store';
+
+/** Минимальная валидная деталь выбранной сущности (для авто-перехода на инспектор). */
+function selectedDetail(eid: number): EntityDetail {
+  return {
+    eid: eid as EntityId,
+    kind: 'human',
+    faction: 'loners' as FactionId,
+    name: { first: 'Сергей', last: 'Лисенко', nickname: 'Лис' },
+    loc: 1 as LocationId,
+    needs: { hunger: 0, thirst: 0, fatigue: 0, fear: 0 },
+    hp: 100,
+    inventory: [],
+    money: 0,
+    memory: [],
+    relations: [],
+    fame: 0,
+    recentEvents: [],
+  };
+}
 
 function fixedView(): WorldView {
   const mk = (eid: number, kind: EntityKind): WorldView['entities'][number] => ({
@@ -57,22 +76,96 @@ describe('App — четыре области макета и плейсхолд
 
   it('присутствуют заголовки всех четырёх областей', () => {
     render(<App />);
-    // Карта, Радиоэфир, Летопись/Инспектор — заголовки панелей.
+    // Карта, Радиоэфир — заголовки панелей; область летописи/инспектора теперь вкладки.
     expect(screen.getByText(/Карта/)).toBeTruthy();
     expect(screen.getByText(/Радиоэфир/)).toBeTruthy();
-    expect(screen.getByText(/Летопись \/ Инспектор/)).toBeTruthy();
+    expect(screen.getByTestId('tab-chronicle')).toBeTruthy();
+    expect(screen.getByTestId('tab-inspector')).toBeTruthy();
   });
 
-  it('карта (4.2) и радиоэфир (4.3) реализованы; летопись/инспектор — ещё TODO (4.5–4.6)', () => {
+  it('карта (4.2)/радиоэфир (4.3)/инспектор (4.5) реализованы; летопись — ещё TODO (4.4)', () => {
     render(<App />);
     // Карта реализована (задача 4.2): вместо TODO — Canvas-компонент.
     expect(screen.getByTestId('map-canvas')).toBeTruthy();
     expect(screen.queryByText(/TODO 4.2/)).toBeNull();
     // Радиоэфир реализован (задача 4.3): вместо TODO — панель RadioLog.
     expect(screen.getByTestId('radio-log')).toBeTruthy();
-    expect(screen.queryByText(/TODO 4.4/)).toBeNull();
-    // Летопись/инспектор пока заглушка.
-    expect(screen.getByText(/TODO 4.5–4.6/)).toBeTruthy();
+    // Инспектор (4.5) присутствует как вкладка; по умолчанию активна летопись (заглушка 4.4).
+    expect(screen.getByTestId('tab-inspector')).toBeTruthy();
+    expect(screen.getByTestId('chronicle-stub')).toBeTruthy();
+  });
+
+  it('вкладки: по умолчанию летопись; выбор сущности авто-переключает на инспектор; клик возвращает', () => {
+    render(<App />);
+    // Старт — вкладка летописи (заглушка 4.4), инспектора не видно.
+    expect(screen.getByTestId('chronicle-stub')).toBeTruthy();
+    expect(screen.queryByTestId('inspector')).toBeNull();
+
+    // Выбор сущности (клик на карте/в эфире → detail+selectedEid) авто-переводит на инспектор.
+    act(() => {
+      useUiStore.setState({
+        selectedEid: 1 as EntityId,
+        detail: {
+          eid: 1 as EntityId,
+          kind: 'human',
+          faction: 'loners' as FactionId,
+          name: { first: 'Сергей', last: 'Лисенко', nickname: 'Лис' },
+          loc: 1 as LocationId,
+          needs: { hunger: 0, thirst: 0, fatigue: 0, fear: 0 },
+          hp: 100,
+          inventory: [],
+          money: 0,
+          memory: [],
+          relations: [],
+          fame: 0,
+          recentEvents: [],
+        },
+      });
+    });
+    expect(screen.getByTestId('inspector')).toBeTruthy();
+    expect(screen.queryByTestId('chronicle-stub')).toBeNull();
+
+    // Ручной клик по вкладке «Летопись» возвращает заглушку (выбор не блокирует навигацию).
+    fireEvent.click(screen.getByTestId('tab-chronicle'));
+    expect(screen.getByTestId('chronicle-stub')).toBeTruthy();
+  });
+
+  it('вкладки: выбор ДРУГОЙ сущности с летописи снова форсит инспектор (авто-переход на ФРОНТ выбора)', () => {
+    render(<App />);
+
+    // Выбрали сущность 1 → авто-инспектор; наблюдатель вручную ушёл на летопись.
+    act(() => {
+      useUiStore.setState({ selectedEid: 1 as EntityId, detail: selectedDetail(1) });
+    });
+    expect(screen.getByTestId('inspector')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('tab-chronicle'));
+    expect(screen.getByTestId('chronicle-stub')).toBeTruthy();
+
+    // Клик по НОВОЙ сущности (eid 1 → 2) — новый фронт выбора: инспектор всплывает сам.
+    act(() => {
+      useUiStore.setState({ selectedEid: 2 as EntityId, detail: selectedDetail(2) });
+    });
+    expect(screen.getByTestId('inspector')).toBeTruthy();
+    expect(screen.queryByTestId('chronicle-stub')).toBeNull();
+  });
+
+  it('вкладки: повторный клик по УЖЕ выбранной сущности не выдёргивает с летописи', () => {
+    render(<App />);
+
+    // Выбор 1 → инспектор; уходим на летопись.
+    act(() => {
+      useUiStore.setState({ selectedEid: 1 as EntityId, detail: selectedDetail(1) });
+    });
+    fireEvent.click(screen.getByTestId('tab-chronicle'));
+    expect(screen.getByTestId('chronicle-stub')).toBeTruthy();
+
+    // Тот же eid прилетел снова (обновилась деталь, выбор НЕ сменился) — фронта нет,
+    // наблюдатель остаётся на летописи (иначе он не смог бы её читать при живом выборе).
+    act(() => {
+      useUiStore.setState({ detail: { ...selectedDetail(1), hp: 50 } });
+    });
+    expect(screen.getByTestId('chronicle-stub')).toBeTruthy();
+    expect(screen.queryByTestId('inspector')).toBeNull();
   });
 
   it('тайм-бар: активный темп (не пауза) и присутствие моста', () => {
