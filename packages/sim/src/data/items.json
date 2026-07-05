@@ -5,8 +5,13 @@
     { "id": "canned", "kind": "food", "weight": 0.4, "nutrition": 45, "basePrice": 55 },
     { "id": "bread", "kind": "food", "weight": 0.25, "nutrition": 25, "basePrice": 25 },
     { "id": "meat", "kind": "food", "weight": 0.3, "nutrition": 35, "basePrice": 40 },
+    { "id": "forage_food", "kind": "food", "weight": 0.2, "nutrition": 15, "basePrice": 8 },
     { "id": "water", "kind": "drink", "weight": 0.5, "hydration": 60, "basePrice": 20 },
     { "id": "bandage", "kind": "medical", "weight": 0.05, "basePrice": 90 },
+    { "id": "medkit", "kind": "medical", "weight": 0.35, "basePrice": 260 },
+    { "id": "pseudodog_paw", "kind": "part", "weight": 1.5, "basePrice": 800 },
+    { "id": "bloodsucker_tentacle", "kind": "part", "weight": 0.8, "basePrice": 2500 },
+    { "id": "chimera_claw", "kind": "part", "weight": 1.2, "basePrice": 5000 },
     { "id": "artifact_medusa", "kind": "artifact", "weight": 0.4, "basePrice": 8000, "tier": 0 },
     { "id": "artifact_stone_flower", "kind": "artifact", "weight": 0.6, "basePrice": 18000, "tier": 1 },
     { "id": "artifact_moonlight", "kind": "artifact", "weight": 0.5, "basePrice": 40000, "tier": 2 }

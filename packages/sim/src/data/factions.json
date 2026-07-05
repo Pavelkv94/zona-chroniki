@@ -1,9 +1,9 @@
 {
   "factions": [
     { "id": "loners", "name": "Одиночки" },
-    { "id": "military", "name": "Военные" },
-    { "id": "duty", "name": "Долг" },
-    { "id": "bandits", "name": "Бандиты", "predatory": true }
+    { "id": "military", "name": "Военные", "stance": "defensive" },
+    { "id": "duty", "name": "Долг", "stance": "crusader" },
+    { "id": "bandits", "name": "Бандиты", "predatory": true, "stance": "aggressive" }
   ],
   "relations": [
     { "a": "loners", "b": "military", "value": -10 },

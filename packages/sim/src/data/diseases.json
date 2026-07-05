@@ -1,0 +1,22 @@
+{
+  "diseases": [
+    {
+      "id": "cold",
+      "key": "cold",
+      "transmissibility": 0.15,
+      "coldBorne": true,
+      "severityRate": 0.0008,
+      "lethality": 0.1,
+      "recoveryTicks": 4320
+    },
+    {
+      "id": "infection",
+      "key": "infection",
+      "transmissibility": 0.35,
+      "coldBorne": false,
+      "severityRate": 0.0025,
+      "lethality": 0.5,
+      "recoveryTicks": 7200
+    }
+  ]
+}

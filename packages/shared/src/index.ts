@@ -75,4 +75,6 @@ export type {
   SettlementsData,
   AnomalyFieldData,
   AnomalyFieldsData,
+  DiseaseData,
+  DiseasesData,
 } from './data';

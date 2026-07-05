@@ -39,6 +39,7 @@ import type {
   MessagesData,
   SettlementData,
   AnomalyFieldData,
+  DiseaseData,
 } from '@zona/shared';
 
 import mapRaw from './map.json';
@@ -50,6 +51,7 @@ import professionsRaw from './professions.json';
 import settlementsRaw from './settlements.json';
 import anomalyFieldsRaw from './anomaly_fields.json';
 import messagesRaw from './messages.json';
+import diseasesRaw from './diseases.json';
 
 /** Ошибка валидации/связности контента. Бросается при загрузке модуля. */
 export class DataError extends Error {
@@ -195,14 +197,51 @@ function validateItems(data: unknown): readonly ItemData[] {
 
 // ── Валидация видов ─────────────────────────────────────────────────────────
 
-function validateSpecies(data: unknown): readonly SpeciesData[] {
+/**
+ * Разрешённые драйверы перемещения вида (`SpeciesData.moveDriver`, Фаза 5, задача
+ * 5.1). Держим ДАННЫМИ рядом с валидатором — единый источник правды для fail-fast
+ * (незнакомый драйвер = опечатка контента, не молчаливый фолбэк на 'herd').
+ */
+const VALID_MOVE_DRIVERS = new Set(['herd', 'pack', 'solo', 'noise']);
+
+/**
+ * РЕЗЕРВИРОВАННЫЙ ключ-жертва «человек» в `SpeciesData.prey` (Фаза 5, задача 5.1).
+ * Люди — НЕ вид из species.json (это NPC-сущности), но пищевая цепь ставит их
+ * жертвами хищников (псевдособаки/кровосос/химера/зомби охотятся на людей, §пищевые
+ * цепи). Поэтому `prey` резолвится против species-ключей ЛИБО этого спец-токена; любой
+ * иной ключ = битый контент (fail-fast). Код поведения (5.6) отличает 'human' по этому
+ * же токену, а не по хардкоду.
+ */
+const PREY_HUMAN = 'human';
+
+/**
+ * Валидирует `species.json` (закон №10). Поверх базовых полей (herd/repro/forage/…)
+ * проверяет ФЛАГИ экосистемы Фазы 5 (задача 5.1, ревью 5.0 note #1) — fail-fast на
+ * битом контенте, а не молчаливая порча мира:
+ *  - `predator`/`grazes`/`nocturnal`/`reanimated` — boolean, если заданы;
+ *  - `moveDriver` ∈ {herd,pack,solo,noise}, если задан;
+ *  - `prey` — массив непустых строк, каждая РЕЗОЛВИМА: существующий species-ключ ЛИБО
+ *    резервный токен 'human' (хищник охотится на людей); двупроходно — сперва собираем
+ *    ВСЕ ключи (жертва может быть объявлена ПОЗЖЕ хищника), затем резолвим;
+ *  - `partItem` — существующий item-id (закон №3: часть добывается из туши, предмет
+ *    реален), и СОГЛАСОВАН с `partYield`: заданы ОБА или НИ ОДНОГО; `partYield` —
+ *    целое >0, если задан. `itemExists` — инъекция резолвера каталога предметов.
+ */
+function validateSpecies(
+  data: unknown,
+  itemExists: (id: string) => boolean,
+): readonly SpeciesData[] {
   assert(data !== null && typeof data === 'object', 'species.json: не объект');
   const arr = (data as { species?: unknown }).species;
   assert(Array.isArray(arr), 'species.json: species должен быть массивом');
   const species = arr as SpeciesData[];
+  // Проход 1: базовые поля + набор всех ключей (для forward-резолва prey).
+  const keys = new Set<string>();
   species.forEach((s, i) => {
     assert(s.id === i, `вид #${i}: id=${s.id}, ожидался плотный индекс ${i}`);
     assert(typeof s.key === 'string' && s.key.length > 0, `вид ${i}: пустой key`);
+    assert(!keys.has(s.key), `вид ${i}: дублирующийся key "${s.key}"`);
+    keys.add(s.key);
     assert(Number.isInteger(s.herdMin) && s.herdMin >= 1, `вид "${s.key}": herdMin должен быть >=1`);
     assert(Number.isInteger(s.herdMax) && s.herdMax >= s.herdMin, `вид "${s.key}": herdMax < herdMin`);
     assert(typeof s.flees === 'boolean', `вид "${s.key}": flees не boolean`);
@@ -213,7 +252,95 @@ function validateSpecies(data: unknown): readonly SpeciesData[] {
     assert(s.foragePerTick > 0, `вид "${s.key}": foragePerTick должен быть >0`);
     assert(s.meatYield > 0, `вид "${s.key}": meatYield должен быть >0`);
   });
+  // Проход 2: флаги экосистемы Фазы 5 (задача 5.1).
+  species.forEach((s) => {
+    for (const [flag, val] of [
+      ['predator', s.predator],
+      ['grazes', s.grazes],
+      ['nocturnal', s.nocturnal],
+      ['reanimated', s.reanimated],
+    ] as const) {
+      assert(
+        val === undefined || typeof val === 'boolean',
+        `вид "${s.key}": флаг ${flag} должен быть boolean (или опущен)`,
+      );
+    }
+    assert(
+      s.moveDriver === undefined || VALID_MOVE_DRIVERS.has(s.moveDriver),
+      `вид "${s.key}": неизвестный moveDriver "${s.moveDriver}"`,
+    );
+    // Диета ВЗАИМОИСКЛЮЧАЮЩА (модель пищевой пирамиды Фазы 5): вид либо пасётся
+    // (травоядное, восстанавливается растительным кормом), либо хищник (охотится через
+    // Encounters). Всеядность (predator И grazes) не моделируется — молчаливый приём привёл
+    // бы к существу, что и пасётся, и охотится (двойной канал восстановления/поведения).
+    assert(
+      !(s.predator === true && s.grazes === true),
+      `вид "${s.key}": predator и grazes взаимоисключающи (всеядность не моделируется)`,
+    );
+    if (s.prey !== undefined) {
+      assert(Array.isArray(s.prey), `вид "${s.key}": prey должен быть массивом`);
+      s.prey.forEach((p, pi) => {
+        assert(typeof p === 'string' && p.length > 0, `вид "${s.key}" prey #${pi}: пустой ключ`);
+        assert(
+          p === PREY_HUMAN || keys.has(p),
+          `вид "${s.key}" prey #${pi}: неизвестная жертва "${p}" (нет такого вида и не '${PREY_HUMAN}')`,
+        );
+        // Само-жертва (каннибализм) запрещена: вид не охотится на собственный ключ —
+        // Encounters не должен таргетить сородича как добычу. Не используется контентом.
+        assert(
+          p !== s.key,
+          `вид "${s.key}" prey #${pi}: вид не может быть жертвой самому себе (каннибализм)`,
+        );
+      });
+    }
+    // partItem ↔ partYield: оба или ни одного (закон №3 — часть реальна, из туши).
+    const hasItem = s.partItem !== undefined;
+    const hasYield = s.partYield !== undefined;
+    assert(
+      hasItem === hasYield,
+      `вид "${s.key}": partItem и partYield должны быть заданы ОБА или НИ ОДНОГО`,
+    );
+    if (hasItem) {
+      assert(
+        typeof s.partItem === 'string' && itemExists(s.partItem),
+        `вид "${s.key}": partItem "${s.partItem}" не существует в items.json`,
+      );
+      assert(
+        Number.isInteger(s.partYield) && (s.partYield as number) > 0,
+        `вид "${s.key}": partYield должен быть целым >0`,
+      );
+    }
+  });
   return species;
+}
+
+// ── Валидация болезней (Фаза 5, задача 5.1, закон №10) ───────────────────────
+
+/**
+ * Валидирует `diseases.json` (закон №10 — болезни это КОНТЕНТ). Fail-fast: `id`
+ * непустой/уникальный, `key` непустой, `transmissibility`/`lethality` ∈ [0,1],
+ * `coldBorne` boolean, `severityRate` >0, `recoveryTicks` целое >0. Кривой контент
+ * (заразность 250%, нулевая инкубация) должен падать при загрузке, не молча.
+ */
+function validateDiseases(data: unknown): readonly DiseaseData[] {
+  assert(data !== null && typeof data === 'object', 'diseases.json: не объект');
+  const arr = (data as { diseases?: unknown }).diseases;
+  assert(Array.isArray(arr), 'diseases.json: diseases должен быть массивом');
+  const diseases = arr as DiseaseData[];
+  assert(diseases.length > 0, 'diseases.json: список пуст');
+  const ids = new Set<string>();
+  diseases.forEach((d, i) => {
+    assert(typeof d.id === 'string' && d.id.length > 0, `болезнь #${i}: пустой id`);
+    assert(!ids.has(d.id), `болезнь #${i}: дублирующийся id "${d.id}"`);
+    ids.add(d.id);
+    assert(typeof d.key === 'string' && d.key.length > 0, `болезнь "${d.id}": пустой key`);
+    assert(inRange(d.transmissibility, 0, 1), `болезнь "${d.id}": transmissibility ${d.transmissibility} вне [0,1]`);
+    assert(typeof d.coldBorne === 'boolean', `болезнь "${d.id}": coldBorne не boolean`);
+    assert(typeof d.severityRate === 'number' && d.severityRate > 0, `болезнь "${d.id}": severityRate должен быть >0`);
+    assert(inRange(d.lethality, 0, 1), `болезнь "${d.id}": lethality ${d.lethality} вне [0,1]`);
+    assert(Number.isInteger(d.recoveryTicks) && d.recoveryTicks > 0, `болезнь "${d.id}": recoveryTicks должен быть целым >0`);
+  });
+  return diseases;
 }
 
 // ── Валидация фракций и профессий (контент, закон №10) ───────────────────────
@@ -274,9 +401,21 @@ function validateFactions(data: unknown): readonly FactionData[] {
       p === undefined || typeof p === 'boolean',
       `фракция "${r.id}": predatory должен быть boolean (или опущен)`,
     );
+    // Фаза 5 (задача 5.1): опциональная стратегическая диспозиция stance ∈ enum.
+    const st = (r as unknown as { stance?: unknown }).stance;
+    assert(
+      st === undefined || (typeof st === 'string' && VALID_STANCES.has(st)),
+      `фракция "${r.id}": stance "${String(st)}" не из {defensive,aggressive,crusader}`,
+    );
   });
   return base;
 }
+
+/**
+ * Разрешённые стратегические диспозиции фракции (`FactionData.stance`, Фаза 5, задача
+ * 5.1). Данными рядом с валидатором (fail-fast на опечатке; никто не читает до 5.9).
+ */
+const VALID_STANCES = new Set(['defensive', 'aggressive', 'crusader']);
 
 // ── Валидация матрицы отношений фракций (закон №10) ──────────────────────────
 
@@ -575,8 +714,22 @@ export const MAP: MapData = deepFreeze(validateMap(mapRaw));
 /** Валидированный и замороженный список предметов. */
 export const ITEMS: readonly ItemData[] = deepFreeze(validateItems(itemsRaw));
 
-/** Валидированный и замороженный список видов животных. */
-export const SPECIES: readonly SpeciesData[] = deepFreeze(validateSpecies(speciesRaw));
+/**
+ * Валидированный и замороженный список видов животных. `itemExists` инъектируется
+ * замыканием над уже загруженными ITEMS (партайтемы Фазы 5 резолвятся против каталога
+ * предметов — закон №3: часть добывается из реального предмета items.json).
+ */
+const ITEM_IDS: ReadonlySet<string> = new Set(ITEMS.map((it) => it.id));
+export const SPECIES: readonly SpeciesData[] = deepFreeze(
+  validateSpecies(speciesRaw, (id) => ITEM_IDS.has(id)),
+);
+
+/**
+ * Валидированный и замороженный список болезней (Фаза 5, задача 5.1, закон №10).
+ * Носитель болезни (компонент Sickness) хранит СЫРОЙ ui8-код; маппинг код↔id вводит
+ * система болезней (5.8). В тик 5.1 никто не читает — чистый контент-снапшот.
+ */
+export const DISEASES: readonly DiseaseData[] = deepFreeze(validateDiseases(diseasesRaw));
 
 /** Валидированный и замороженный пул имён. */
 export const NAMES: NamesData = deepFreeze(validateNames(namesRaw));
@@ -766,6 +919,21 @@ export function getSpecies(id: number): SpeciesData {
   const s = SPECIES[id];
   assert(s !== undefined, `getSpecies: нет вида ${id}`);
   return s;
+}
+
+/** id болезни → DiseaseData (Фаза 5, задача 5.1). */
+const DISEASE_BY_ID: ReadonlyMap<string, DiseaseData> = new Map(DISEASES.map((d) => [d.id, d]));
+
+/** Болезнь по строковому id. Бросает при неизвестном id (закон №10). */
+export function getDisease(id: string): DiseaseData {
+  const d = DISEASE_BY_ID.get(id);
+  assert(d !== undefined, `getDisease: неизвестная болезнь "${id}"`);
+  return d;
+}
+
+/** Все болезни (в порядке файла diseases.json). Иммутабельны. */
+export function getDiseases(): readonly DiseaseData[] {
+  return DISEASES;
 }
 
 /** Фракция по строковому id. Бросает при неизвестном id (закон №10). */
